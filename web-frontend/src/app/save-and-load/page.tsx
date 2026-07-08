@@ -360,7 +360,7 @@ export default function SaveAndLoadPage() {
             Download Anonymized
           </button>
           <p className="text-sm text-gray-600">
-            Developer only: scattering preserves preferred WORKDAY/FREEDAY counts and consecutive runs. Date-group requests are unchanged.
+            Developer only: scattering preserves preferred WORKDAY/NON-WORKDAY counts and consecutive runs. Date-group requests are unchanged.
           </p>
           {scatterShiftRequests && missingPreferredScatterDateGroups.length > 0 && (
             <p className="text-sm text-amber-700">

@@ -33,7 +33,7 @@ import {
   ShiftRequestPreference,
 } from '@/types/scheduling';
 import { ALL, OFF } from '@/utils/keywords';
-import { SINGAPORE_FREEDAY_GROUP_ID, SINGAPORE_WORKDAY_GROUP_ID, SingaporeHolidayEntry } from '@/utils/singaporeHolidays';
+import { SINGAPORE_NONWORKDAY_GROUP_ID, SINGAPORE_WORKDAY_GROUP_ID, SingaporeHolidayEntry } from '@/utils/singaporeHolidays';
 
 const SAMPLE_SINGAPORE_ENTRIES: SingaporeHolidayEntry[] = [
   { date: '2026-05-01', name: 'Labour Day', isObserved: false },
@@ -564,7 +564,7 @@ describe('useSchedulingData', () => {
 
     act(() => {
       result.current.addGroup(DataType.DATES, result.current.dateData, SINGAPORE_WORKDAY_GROUP_ID, [], 'Old workday group');
-      result.current.addGroup(DataType.DATES, result.current.dateData, SINGAPORE_FREEDAY_GROUP_ID, [], 'Old freeday group');
+      result.current.addGroup(DataType.DATES, result.current.dateData, SINGAPORE_NONWORKDAY_GROUP_ID, [], 'Old non-work day group');
     });
 
     act(() => {
@@ -582,10 +582,10 @@ describe('useSchedulingData', () => {
 
     await waitFor(() => {
       const workdayGroup = result.current.dateData.groups.find(group => group.id === SINGAPORE_WORKDAY_GROUP_ID);
-      const freedayGroup = result.current.dateData.groups.find(group => group.id === SINGAPORE_FREEDAY_GROUP_ID);
+      const nonWorkDayGroup = result.current.dateData.groups.find(group => group.id === SINGAPORE_NONWORKDAY_GROUP_ID);
 
       expect(workdayGroup).toEqual(expect.objectContaining({ members: ['04'] }));
-      expect(freedayGroup).toEqual(expect.objectContaining({ members: ['01', '02', '03'] }));
+      expect(nonWorkDayGroup).toEqual(expect.objectContaining({ members: ['01', '02', '03'] }));
     });
   });
 
@@ -600,7 +600,7 @@ describe('useSchedulingData', () => {
           groups: [
             { id: 'MY_GROUP', members: ['01', '04'], description: 'Keep me' },
             { id: SINGAPORE_WORKDAY_GROUP_ID, members: ['02'], description: 'Old workday group' },
-            { id: SINGAPORE_FREEDAY_GROUP_ID, members: ['03'], description: 'Old freeday group' },
+            { id: SINGAPORE_NONWORKDAY_GROUP_ID, members: ['03'], description: 'Old non-work day group' },
           ],
         },
       });
@@ -626,7 +626,7 @@ describe('useSchedulingData', () => {
       expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_WORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: ['04'] }),
       );
-      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_FREEDAY_GROUP_ID)).toEqual(
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_NONWORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: ['01', '02', '03'] }),
       );
     });
@@ -644,7 +644,7 @@ describe('useSchedulingData', () => {
           groups: [
             { id: 'MANUAL', members: ['SPECIAL'], description: 'Keep me' },
             { id: SINGAPORE_WORKDAY_GROUP_ID, members: ['02'], description: 'Old workday group' },
-            { id: SINGAPORE_FREEDAY_GROUP_ID, members: ['03'], description: 'Old freeday group' },
+            { id: SINGAPORE_NONWORKDAY_GROUP_ID, members: ['03'], description: 'Old non-work day group' },
           ],
         },
       });
@@ -669,7 +669,7 @@ describe('useSchedulingData', () => {
         expect.objectContaining({ members: ['SPECIAL'], description: 'Keep me' }),
       );
       expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_WORKDAY_GROUP_ID)?.description).not.toBe('Old workday group');
-      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_FREEDAY_GROUP_ID)?.description).not.toBe('Old freeday group');
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_NONWORKDAY_GROUP_ID)?.description).not.toBe('Old non-work day group');
     });
   });
 
@@ -693,7 +693,7 @@ describe('useSchedulingData', () => {
       expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_WORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: [] }),
       );
-      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_FREEDAY_GROUP_ID)).toEqual(
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_NONWORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: [] }),
       );
     });
@@ -716,7 +716,7 @@ describe('useSchedulingData', () => {
       expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_WORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: [] }),
       );
-      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_FREEDAY_GROUP_ID)).toEqual(
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_NONWORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: [] }),
       );
     });
@@ -742,7 +742,7 @@ describe('useSchedulingData', () => {
       expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_WORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: ['04'] }),
       );
-      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_FREEDAY_GROUP_ID)).toEqual(
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_NONWORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: ['01', '02', '03'] }),
       );
     });
@@ -755,7 +755,7 @@ describe('useSchedulingData', () => {
       expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_WORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: [] }),
       );
-      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_FREEDAY_GROUP_ID)).toEqual(
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_NONWORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: [] }),
       );
     });
@@ -768,7 +768,7 @@ describe('useSchedulingData', () => {
       expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_WORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: ['04'] }),
       );
-      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_FREEDAY_GROUP_ID)).toEqual(
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_NONWORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: ['01', '02', '03'] }),
       );
     });

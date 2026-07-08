@@ -26,7 +26,7 @@ import { getMissingPreferredScatterDateGroups, randomizeConcreteDateShiftRequest
 const dateItems = ['01', '02', '03', '04', '05', '06', '07', '08'].map(id => ({ id, description: '' }));
 const dateGroups = [
   { id: 'WORKDAY', members: ['01', '02', '05', '06'], description: '' },
-  { id: 'FREEDAY', members: ['03', '04', '07', '08'], description: '' }
+  { id: 'NON-WORKDAY', members: ['03', '04', '07', '08'], description: '' }
 ];
 const state: SchedulingState = {
   apiVersion: 'alpha',
@@ -66,7 +66,7 @@ describe('randomizeConcreteDateShiftRequests', () => {
     const result = randomizeConcreteDateShiftRequests(state, dateItems, fallbackGroups, () => 0);
     const requests = result.preferences as ShiftRequestPreference[];
 
-    expect(getMissingPreferredScatterDateGroups(fallbackGroups)).toEqual(['FREEDAY']);
+    expect(getMissingPreferredScatterDateGroups(fallbackGroups)).toEqual(['NON-WORKDAY']);
     expect(requests[0].date.every(dateId => fallbackGroups[1].members.includes(dateId))).toBe(true);
     expect(fallbackGroups[2].members).toContain(requests[1].date[0]);
   });
@@ -75,7 +75,7 @@ describe('randomizeConcreteDateShiftRequests', () => {
     const mixedDateItems = ['01', '02', '03', '04'].map(id => ({ id, description: '' }));
     const mixedDateGroups = [
       { id: 'WORKDAY', members: ['01', '04'], description: '' },
-      { id: 'FREEDAY', members: ['02', '03'], description: '' }
+      { id: 'NON-WORKDAY', members: ['02', '03'], description: '' }
     ];
     const mixedState: SchedulingState = {
       ...state,

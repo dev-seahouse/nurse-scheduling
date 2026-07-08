@@ -542,7 +542,7 @@ describe('SaveAndLoadPage', () => {
         items: ['01', '02', '03', '04'].map(id => ({ id, description: '' })),
         groups: [
           { id: 'WORKDAY', members: ['01', '03'], description: '' },
-          { id: 'FREEDAY', members: ['02', '04'], description: '' },
+          { id: 'NON-WORKDAY', members: ['02', '04'], description: '' },
         ],
       },
       peopleData: { items: [{ id: 'Alice', description: '' }], groups: [] },
@@ -576,7 +576,7 @@ describe('SaveAndLoadPage', () => {
     await user.click(screen.getByText('Anonymize YAML'));
     await user.click(screen.getByRole('checkbox', { name: /scatter shift requests/i }));
 
-    expect(screen.getByText(/WORKDAY and FREEDAY groups are missing/i)).toBeInTheDocument();
+    expect(screen.getByText(/WORKDAY and NON-WORKDAY groups are missing/i)).toBeInTheDocument();
     expect(screen.getByText(/fall back to WEEKDAY and WEEKEND groups/i)).toBeInTheDocument();
   });
 

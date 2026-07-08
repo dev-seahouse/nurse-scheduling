@@ -21,7 +21,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  SINGAPORE_FREEDAY_GROUP_ID,
+  SINGAPORE_NONWORKDAY_GROUP_ID,
+  SINGAPORE_PH_GROUP_ID,
   SINGAPORE_WORKDAY_GROUP_ID,
   buildSingaporeHolidayGroups,
   fetchSingaporeHolidays,
@@ -29,7 +30,7 @@ import {
   getSingaporeDayType,
   getSingaporeHolidayEntriesInRange,
   getSingaporeHolidaySupportLabel,
-  isSingaporeFreeday,
+  isSingaporeNonWorkDay,
   isSingaporeHolidayRangeSupported,
   resetSingaporeHolidaysCache,
 } from '@/utils/singaporeHolidays';
@@ -190,7 +191,7 @@ describe('singaporeHolidays', () => {
     });
   });
 
-  describe('isSingaporeFreeday', () => {
+  describe('isSingaporeNonWorkDay', () => {
     const entries = [
       { date: '2026-05-01', name: 'Labour Day', isObserved: false },
       { date: '2026-05-31', name: 'Vesak Day', isObserved: false },
@@ -200,23 +201,23 @@ describe('singaporeHolidays', () => {
     ];
 
     it('returns true for a holiday on a weekday', () => {
-      expect(isSingaporeFreeday(new Date('2026-05-01'), entries)).toBe(true);
+      expect(isSingaporeNonWorkDay(new Date('2026-05-01'), entries)).toBe(true);
     });
 
     it('returns true for both actual and observed dates when a holiday falls on Sunday', () => {
-      expect(isSingaporeFreeday(new Date('2026-05-31'), entries)).toBe(true);
-      expect(isSingaporeFreeday(new Date('2026-06-01'), entries)).toBe(true);
-      expect(isSingaporeFreeday(new Date('2026-08-09'), entries)).toBe(true);
-      expect(isSingaporeFreeday(new Date('2026-08-10'), entries)).toBe(true);
+      expect(isSingaporeNonWorkDay(new Date('2026-05-31'), entries)).toBe(true);
+      expect(isSingaporeNonWorkDay(new Date('2026-06-01'), entries)).toBe(true);
+      expect(isSingaporeNonWorkDay(new Date('2026-08-09'), entries)).toBe(true);
+      expect(isSingaporeNonWorkDay(new Date('2026-08-10'), entries)).toBe(true);
     });
 
     it('returns true for plain weekends', () => {
-      expect(isSingaporeFreeday(new Date('2026-05-02'), entries)).toBe(true);
-      expect(isSingaporeFreeday(new Date('2026-05-03'), entries)).toBe(true);
+      expect(isSingaporeNonWorkDay(new Date('2026-05-02'), entries)).toBe(true);
+      expect(isSingaporeNonWorkDay(new Date('2026-05-03'), entries)).toBe(true);
     });
 
     it('returns false for an ordinary weekday', () => {
-      expect(isSingaporeFreeday(new Date('2026-05-04'), entries)).toBe(false);
+      expect(isSingaporeNonWorkDay(new Date('2026-05-04'), entries)).toBe(false);
     });
   });
 
@@ -226,17 +227,17 @@ describe('singaporeHolidays', () => {
       { date: '2026-05-31', name: 'Vesak Day', isObserved: false },
     ];
 
-    it('returns FREEDAY for a holiday on a weekday', () => {
-      expect(getSingaporeDayType(new Date('2026-05-01'), entries)).toBe(SINGAPORE_FREEDAY_GROUP_ID);
+    it('returns NON-WORKDAY for a holiday on a weekday', () => {
+      expect(getSingaporeDayType(new Date('2026-05-01'), entries)).toBe(SINGAPORE_NONWORKDAY_GROUP_ID);
     });
 
     it('returns WORKDAY for an ordinary weekday inside the supported range', () => {
       expect(getSingaporeDayType(new Date('2026-05-29'), entries)).toBe(SINGAPORE_WORKDAY_GROUP_ID);
     });
 
-    it('returns FREEDAY for a weekend inside the supported range', () => {
-      expect(getSingaporeDayType(new Date('2026-05-02'), entries)).toBe(SINGAPORE_FREEDAY_GROUP_ID);
-      expect(getSingaporeDayType(new Date('2026-05-03'), entries)).toBe(SINGAPORE_FREEDAY_GROUP_ID);
+    it('returns NON-WORKDAY for a weekend inside the supported range', () => {
+      expect(getSingaporeDayType(new Date('2026-05-02'), entries)).toBe(SINGAPORE_NONWORKDAY_GROUP_ID);
+      expect(getSingaporeDayType(new Date('2026-05-03'), entries)).toBe(SINGAPORE_NONWORKDAY_GROUP_ID);
     });
 
     it('returns undefined when the entries list is empty', () => {
@@ -276,7 +277,7 @@ describe('singaporeHolidays', () => {
       )).toEqual([]);
     });
 
-    it('classifies in-range entries as FREEDAY and in-range non-weekend non-holiday dates as WORKDAY', () => {
+    it('classifies in-range entries as NON-WORKDAY and in-range non-weekend non-holiday dates as WORKDAY', () => {
       // Entries span the full dateRange so the derived supported window covers it.
       const entriesSpanningRange = [
         { date: '2026-05-01', name: 'Labour Day', isObserved: false },
@@ -284,7 +285,7 @@ describe('singaporeHolidays', () => {
       ];
       // 2026-05-02 (Sat) and 2026-05-03 (Sun) are plain weekends, but with
       // 2026-05-02 marked as a holiday entry, only the unmarked weekend (2026-05-03)
-      // proves the "weekend → FREEDAY" fallback is still applied for in-range dates.
+      // proves the "weekend → NON-WORKDAY" fallback is still applied for in-range dates.
       const groups = buildSingaporeHolidayGroups(
         [makeItem('01'), makeItem('02'), makeItem('03'), makeItem('04')],
         dateRange,
@@ -294,13 +295,19 @@ describe('singaporeHolidays', () => {
       expect(groups).toEqual([
         {
           id: SINGAPORE_WORKDAY_GROUP_ID,
-          description: 'Singapore workdays imported from the data.gov.sg public holidays dataset',
+          description: 'Singapore workdays (weekdays excluding public holidays) imported from the data.gov.sg public holidays dataset',
           members: [],
         },
         {
-          id: SINGAPORE_FREEDAY_GROUP_ID,
-          description: 'Singapore freedays imported from the data.gov.sg public holidays dataset',
+          id: SINGAPORE_NONWORKDAY_GROUP_ID,
+          description: 'Singapore non-work days (public holidays and weekends) imported from the data.gov.sg public holidays dataset',
           members: ['01', '02', '03', '04'],
+        },
+        {
+          id: SINGAPORE_PH_GROUP_ID,
+          description: 'Singapore public holidays imported from the data.gov.sg public holidays dataset',
+          // Only the two dates present in entries (05-01, 05-04); weekends are excluded from PH.
+          members: ['01', '04'],
         },
       ]);
     });
@@ -322,22 +329,27 @@ describe('singaporeHolidays', () => {
         entriesSpanningRange,
       );
 
-      // 01 (Fri, Labour Day) → FREEDAY (in freedaySet)
-      // 03 (Sun) → FREEDAY (weekend)
-      // 04 (Mon) → WORKDAY (weekday, not in freedaySet)
+      // 01 (Fri, Labour Day) → NON-WORKDAY (in publicHolidaySet) + PH
+      // 03 (Sun) → NON-WORKDAY (weekend), not PH
+      // 04 (Mon) → WORKDAY (weekday, not in publicHolidaySet)
       expect(groups).toContainEqual({
         id: SINGAPORE_WORKDAY_GROUP_ID,
-        description: 'Singapore workdays imported from the data.gov.sg public holidays dataset',
+        description: 'Singapore workdays (weekdays excluding public holidays) imported from the data.gov.sg public holidays dataset',
         members: ['04'],
       });
       expect(groups).toContainEqual({
-        id: SINGAPORE_FREEDAY_GROUP_ID,
-        description: 'Singapore freedays imported from the data.gov.sg public holidays dataset',
+        id: SINGAPORE_NONWORKDAY_GROUP_ID,
+        description: 'Singapore non-work days (public holidays and weekends) imported from the data.gov.sg public holidays dataset',
         members: ['01', '03'],
+      });
+      expect(groups).toContainEqual({
+        id: SINGAPORE_PH_GROUP_ID,
+        description: 'Singapore public holidays imported from the data.gov.sg public holidays dataset',
+        members: ['01'],
       });
     });
 
-    it('classifies both actual and observed dates into FREEDAY', () => {
+    it('classifies both actual and observed dates into NON-WORKDAY', () => {
       const observedEntries = [
         { date: '2026-05-31', name: 'Vesak Day', isObserved: false },
         { date: '2026-06-01', name: 'Vesak Day', isObserved: true },
@@ -353,14 +365,20 @@ describe('singaporeHolidays', () => {
       );
 
       expect(groups).toContainEqual({
-        id: SINGAPORE_FREEDAY_GROUP_ID,
-        description: 'Singapore freedays imported from the data.gov.sg public holidays dataset',
+        id: SINGAPORE_NONWORKDAY_GROUP_ID,
+        description: 'Singapore non-work days (public holidays and weekends) imported from the data.gov.sg public holidays dataset',
         members: ['05-31', '06-01'],
       });
       expect(groups).toContainEqual({
         id: SINGAPORE_WORKDAY_GROUP_ID,
-        description: 'Singapore workdays imported from the data.gov.sg public holidays dataset',
+        description: 'Singapore workdays (weekdays excluding public holidays) imported from the data.gov.sg public holidays dataset',
         members: [],
+      });
+      // Both the actual and observed public-holiday dates belong to PH too.
+      expect(groups).toContainEqual({
+        id: SINGAPORE_PH_GROUP_ID,
+        description: 'Singapore public holidays imported from the data.gov.sg public holidays dataset',
+        members: ['05-31', '06-01'],
       });
     });
   });

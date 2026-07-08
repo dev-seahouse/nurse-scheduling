@@ -114,8 +114,8 @@ export default function DatePage() {
     "Set the start and end dates for your scheduling period",
     "The end date must be after the start date",
     "Dates are automatically generated based on your date range",
-    "Create groups to organize dates (e.g., \"Weekdays\", \"Weekends\", \"Workdays\", \"Freedays\")",
-    "When enabled, updating the date range can create or overwrite editable Singapore holiday date groups such as WORKDAY and FREEDAY",
+    "Create groups to organize dates (e.g., \"Weekdays\", \"Weekends\", \"Workdays\", \"Non-Work Days\")",
+    "When enabled, updating the date range can create or overwrite editable Singapore holiday date groups such as WORKDAY and NON-WORKDAY",
     "Click and drag through checkboxes to quickly select multiple dates when adding or editing",
     "Drag and drop to reorder groups",
     "Double-click to edit names or descriptions",
@@ -336,7 +336,7 @@ export default function DatePage() {
                   Import Singapore holidays into date groups
                 </label>
                 <p className="mt-1 text-sm text-gray-600">
-                  Saving with this enabled will create or overwrite normal editable Singapore holiday date groups once, including WORKDAY and FREEDAY.
+                  Saving with this enabled will create or overwrite normal editable Singapore holiday date groups once, including WORKDAY and NON-WORKDAY.
                 </p>
                 {isHolidaysLoading && (
                   <p className="mt-2 text-sm text-gray-500">Loading Singapore public holidays…</p>
@@ -373,7 +373,7 @@ export default function DatePage() {
                           <div className="flex items-center justify-between gap-3">
                             <span className="font-mono text-gray-700">{entry.date} ({formatHolidayWeekday(entry.date)})</span>
                             <span className="rounded bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800">
-                              {entry.isObserved ? 'OBSERVED' : 'FREEDAY'}
+                              {entry.isObserved ? 'OBSERVED' : 'NON-WORKDAY'}
                             </span>
                           </div>
                           <div className="mt-1 text-gray-600">{entry.name}</div>

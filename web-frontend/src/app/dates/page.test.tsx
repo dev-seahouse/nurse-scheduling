@@ -198,7 +198,7 @@ describe('DatePage', () => {
     const holidayDetails = screen.getByText(/holiday change/i);
     expect(holidayDetails).toBeInTheDocument();
     expect(screen.getByText(/2026-05-01 \(Fri\)/)).toBeInTheDocument();
-    expect(screen.getAllByText('FREEDAY').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('NON-WORKDAY').length).toBeGreaterThan(0);
 
     await user.click(screen.getByRole('button', { name: 'Update' }));
 
@@ -424,7 +424,7 @@ describe('DatePage', () => {
         items: [],
         groups: [
           { id: 'WORKDAY', members: ['02'], description: 'Existing workday group' },
-          { id: 'FREEDAY', members: ['01'], description: 'Existing freeday group' },
+          { id: 'NON-WORKDAY', members: ['01'], description: 'Existing non-work day group' },
         ],
       },
       updateDateRange,

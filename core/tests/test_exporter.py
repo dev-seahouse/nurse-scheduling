@@ -213,7 +213,7 @@ dates:
     startDate: 2025-01-01
     endDate: 2025-01-02
   groups:
-    - id: FREEDAY
+    - id: NON-WORKDAY
       members: [2025-01-02]
 people:
   items:
@@ -228,7 +228,7 @@ preferences:
     requiredNumPeople: 0
   - type: shift request
     person: n1
-    date: ["01", FREEDAY]
+    date: ["01", NON-WORKDAY]
     shiftType: D
     weight: -5
 export:
@@ -653,7 +653,7 @@ preferences:
     assert df.iloc[0, 3] == "2025/1/2"
 
 
-def test_prettify_off_annotations_and_workday_freeday_headers():
+def test_prettify_off_annotations_and_workday_nonworkday_headers():
     yaml_content = b"""
 apiVersion: alpha
 dates:
@@ -663,7 +663,7 @@ dates:
   groups:
     - id: WORKDAY
       members: [2025-01-02, 2025-01-03]
-    - id: FREEDAY
+    - id: NON-WORKDAY
       members: [2025-01-01]
 people:
   items:
@@ -706,9 +706,9 @@ export:
       countShiftTypes: [OFF]
       countDates: [WORKDAY]
     - type: count
-      header: OFF (FREEDAY)
+      header: OFF (NON-WORKDAY)
       countShiftTypes: [OFF]
-      countDates: [FREEDAY]
+      countDates: [NON-WORKDAY]
   extraRows:
     - type: count
       header: OFF Count
@@ -727,10 +727,10 @@ export:
     # History fallback branch for person without history.
     assert df.iloc[3, 1] == ""
 
-    # Workday/freeday summary headers should be present when both groups are found.
+    # Workday/nonworkday summary headers should be present when both groups are found.
     headers = list(df.iloc[1, :])
     assert "OFF (WORKDAY)" in headers
-    assert "OFF (FREEDAY)" in headers
+    assert "OFF (NON-WORKDAY)" in headers
     assert df.iloc[7, 0] == "OFF Count"
     assert df.iloc[7, 2] == 2
 
@@ -973,7 +973,7 @@ def test_dataframe_generation_supports_multiple_assigned_shift_types():
     assert info["styles"] == {}
 
 
-def test_prettify_styling_does_not_add_default_freeday_or_weekend_colors():
+def test_prettify_styling_does_not_add_default_nonworkday_or_weekend_colors():
     yaml_content = b"""
 apiVersion: alpha
 dates:
@@ -983,7 +983,7 @@ dates:
   groups:
     - id: WORKDAY
       members: [2025-01-03]
-    - id: FREEDAY
+    - id: NON-WORKDAY
       members: [2025-01-05]
 people:
   items:

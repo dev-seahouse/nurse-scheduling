@@ -97,13 +97,13 @@ describe('DateGroupMemberSelector', () => {
       />,
     );
 
-    // 2026-05-01 (Fri): Labour Day → weekday FREEDAY with medium text.
+    // 2026-05-01 (Fri): Labour Day → weekday NON-WORKDAY with medium text.
     expect(screen.getByRole('button', { name: '01' })).toHaveClass('font-medium', 'text-amber-800');
-    // 2026-05-09 (Sat): plain weekend FREEDAY → amber background, not selected.
+    // 2026-05-09 (Sat): plain weekend NON-WORKDAY → amber background, not selected.
     expect(screen.getByRole('button', { name: '09' })).toHaveClass('bg-blue-600', 'text-white');
-    // 2026-05-16 (Sat): plain weekend FREEDAY → amber background.
+    // 2026-05-16 (Sat): plain weekend NON-WORKDAY → amber background.
     expect(screen.getByRole('button', { name: '16' })).toHaveClass('bg-amber-50/70', 'text-amber-700');
-    // 2026-05-31 (Sun): Vesak Day, also a weekend FREEDAY → amber weekend styling (no medium text).
+    // 2026-05-31 (Sun): Vesak Day, also a weekend NON-WORKDAY → amber weekend styling (no medium text).
     expect(screen.getByRole('button', { name: '31' })).toHaveClass('bg-amber-50/70', 'text-amber-700');
   });
 

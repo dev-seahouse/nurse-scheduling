@@ -26,5 +26,6 @@ export const WORKER_NAMESPACE_KEY = '__PLAYWRIGHT_WORKER_NAMESPACE__';
 export const INFINITY_PLACEHOLDER = '__INFINITY__';
 export const NEGATIVE_INFINITY_PLACEHOLDER = '__NEGATIVE_INFINITY__';
 export const WORKDAY = 'WORKDAY';
-export const FREEDAY = 'FREEDAY';
+export const NONWORKDAY = 'NON-WORKDAY';
+export const PH = 'PH';
 export const DEFAULT_SEPARATOR_COLOR = '#000000';

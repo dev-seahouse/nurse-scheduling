@@ -24,7 +24,7 @@ import { SHIFT_REQUEST } from '@/types/scheduling';
 import type { Group, Item, ShiftRequestPreference } from '@/types/scheduling';
 import type { SchedulingState } from '@/hooks/useSchedulingData';
 import { WEEKDAY, WEEKEND } from '@/utils/keywords';
-import { SINGAPORE_FREEDAY_GROUP_ID, SINGAPORE_WORKDAY_GROUP_ID } from '@/utils/singaporeHolidays';
+import { SINGAPORE_NONWORKDAY_GROUP_ID, SINGAPORE_WORKDAY_GROUP_ID } from '@/utils/singaporeHolidays';
 
 type Random = () => number;
 
@@ -42,15 +42,15 @@ function shuffled<T>(values: T[], random: Random): T[] {
 // Report which imported holiday groups are absent so the UI can warn before using fallback groups.
 export function getMissingPreferredScatterDateGroups(dateGroups: Group[]): string[] {
   const dateGroupIds = new Set(dateGroups.map(group => group.id));
-  return [SINGAPORE_WORKDAY_GROUP_ID, SINGAPORE_FREEDAY_GROUP_ID].filter(id => !dateGroupIds.has(id));
+  return [SINGAPORE_WORKDAY_GROUP_ID, SINGAPORE_NONWORKDAY_GROUP_ID].filter(id => !dateGroupIds.has(id));
 }
 
 function buildDateCategories(dateItems: Item[], dateGroups: Group[]): Map<string, string> {
   const missingPreferredGroups = getMissingPreferredScatterDateGroups(dateGroups);
-  // Holiday-aware WORKDAY/FREEDAY groups are preferred. If either is unavailable,
+  // Holiday-aware WORKDAY/NON-WORKDAY groups are preferred. If either is unavailable,
   // classify the whole calendar consistently with generated WEEKDAY/WEEKEND groups.
   const [firstCategoryId, secondCategoryId] = missingPreferredGroups.length === 0
-    ? [SINGAPORE_WORKDAY_GROUP_ID, SINGAPORE_FREEDAY_GROUP_ID]
+    ? [SINGAPORE_WORKDAY_GROUP_ID, SINGAPORE_NONWORKDAY_GROUP_ID]
     : [WEEKDAY, WEEKEND];
   // Sets make category membership checks cheap while scanning every concrete date.
   const firstCategory = new Set(dateGroups.find(group => group.id === firstCategoryId)?.members ?? []);
@@ -113,14 +113,14 @@ function movePersonRequests(
 
   runs.forEach(run => {
     // Count categories across the whole block. Their order may change after moving:
-    // [WORKDAY, FREEDAY] is allowed to become [FREEDAY, WORKDAY].
+    // [WORKDAY, NON-WORKDAY] is allowed to become [NON-WORKDAY, WORKDAY].
     const categoryCounts = new Map<string, number>();
     run.forEach(index => {
       const category = dateCategories.get(dateItems[index].id)!;
       categoryCounts.set(category, (categoryCounts.get(category) ?? 0) + 1);
     });
 
-    // Find consecutive destination slots with the same workday/freeday totals.
+    // Find consecutive destination slots with the same workday/non-work day totals.
     // Old source positions remain available so blocks can swap places.
     const candidateStarts = dateItems
       // Try every date as a potential first destination slot.
@@ -135,7 +135,7 @@ function movePersonRequests(
           const category = dateCategories.get(dateItems[start + offset].id)!;
           candidateCategoryCounts.set(category, (candidateCategoryCounts.get(category) ?? 0) + 1);
         }
-        // Keep only destinations with the original block's workday/freeday totals.
+        // Keep only destinations with the original block's workday/non-work day totals.
         return [...categoryCounts].every(([category, count]) => candidateCategoryCounts.get(category) === count);
       });
     // Prefer an actual move. Keep the original location only when no alternative fits.

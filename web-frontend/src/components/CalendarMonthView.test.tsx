@@ -66,10 +66,10 @@ describe('CalendarMonthView primitives', () => {
   });
 
   it('uses quiet normal-day styling and text emphasis for Singapore holiday exceptions', () => {
-    // 2026-05-01 (Fri) is Labour Day: weekday FREEDAY → amber background + medium text
+    // 2026-05-01 (Fri) is Labour Day: weekday NON-WORKDAY → amber background + medium text
     expect(getCalendarDayCategoryClassName(new Date('2026-05-01'), SAMPLE_ENTRIES))
       .toContain('font-medium text-amber-800');
-    // 2026-05-02 (Sat) is a plain weekend FREEDAY → amber background, no medium text
+    // 2026-05-02 (Sat) is a plain weekend NON-WORKDAY → amber background, no medium text
     expect(getCalendarDayCategoryClassName(new Date('2026-05-02'), SAMPLE_ENTRIES))
       .toContain('bg-amber-50/70');
     // 2026-05-04 (Mon) is an ordinary workday → plain white background

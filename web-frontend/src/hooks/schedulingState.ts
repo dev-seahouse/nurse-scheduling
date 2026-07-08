@@ -19,7 +19,7 @@
 
 import { Item, Group, DateRange, Preference, AT_MOST_ONE_SHIFT_PER_DAY, ExportConfig } from '@/types/scheduling';
 import { API_VERSION } from '@/utils/keywords';
-import { FREEDAY, WORKDAY } from './schedulingConstants';
+import { NONWORKDAY, PH, WORKDAY } from './schedulingConstants';
 
 export interface SchedulingState {
   apiVersion: string | number;
@@ -79,12 +79,17 @@ export function createDefaultState(): SchedulingState {
       {
         id: WORKDAY,
         members: [],
-        description: 'Workdays'
+        description: 'Workdays (weekdays excluding public holidays)'
       },
       {
-        id: FREEDAY,
+        id: NONWORKDAY,
         members: [],
-        description: 'Freedays'
+        description: 'Non-Work Days (public holidays and weekends)'
+      },
+      {
+        id: PH,
+        members: [],
+        description: 'Public Holidays'
       }
     ]
   };

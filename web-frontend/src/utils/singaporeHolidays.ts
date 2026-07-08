@@ -27,7 +27,8 @@ import {
 } from '@/utils/singaporeHolidaysStorage';
 
 export const SINGAPORE_WORKDAY_GROUP_ID = 'WORKDAY';
-export const SINGAPORE_FREEDAY_GROUP_ID = 'FREEDAY';
+export const SINGAPORE_NONWORKDAY_GROUP_ID = 'NON-WORKDAY';
+export const SINGAPORE_PH_GROUP_ID = 'PH';
 
 export const SINGAPORE_HOLIDAYS_DATASET_ID = 'd_8ef23381f9417e4d4254ee8b4dcdb176';
 const SINGAPORE_HOLIDAYS_API_URL =
@@ -178,16 +179,19 @@ export function isSingaporeHolidayRangeSupported(
   return start >= range.start && end <= range.end;
 }
 
-function buildFreedaySet(entries: SingaporeHolidayEntry[]): Set<string> {
+// The imported public-holiday date set (both actual holidays and their
+// "(Observed)" substitute days). Weekends are NOT in this set; they are
+// handled by the weekend fallback where a non-work day is derived.
+function buildPublicHolidaySet(entries: SingaporeHolidayEntry[]): Set<string> {
   return new Set(entries.map(entry => entry.date));
 }
 
-export function isSingaporeFreeday(date: Date, entries: SingaporeHolidayEntry[]): boolean {
+export function isSingaporeNonWorkDay(date: Date, entries: SingaporeHolidayEntry[]): boolean {
   if (entries.length === 0) {
     return false;
   }
-  const freedaySet = buildFreedaySet(entries);
-  if (freedaySet.has(formatDate(date))) {
+  const publicHolidaySet = buildPublicHolidaySet(entries);
+  if (publicHolidaySet.has(formatDate(date))) {
     return true;
   }
   const weekday = date.getUTCDay();
@@ -197,7 +201,7 @@ export function isSingaporeFreeday(date: Date, entries: SingaporeHolidayEntry[])
 export function getSingaporeDayType(
   date: Date,
   entries: SingaporeHolidayEntry[],
-): 'WORKDAY' | 'FREEDAY' | undefined {
+): 'WORKDAY' | 'NON-WORKDAY' | undefined {
   const range = getSupportedRange(entries);
   if (range === null) {
     return undefined;
@@ -206,7 +210,7 @@ export function getSingaporeDayType(
   if (dateKey < range.start || dateKey > range.end) {
     return undefined;
   }
-  return isSingaporeFreeday(date, entries) ? SINGAPORE_FREEDAY_GROUP_ID : SINGAPORE_WORKDAY_GROUP_ID;
+  return isSingaporeNonWorkDay(date, entries) ? SINGAPORE_NONWORKDAY_GROUP_ID : SINGAPORE_WORKDAY_GROUP_ID;
 }
 
 function includesDate(dateRange: DateRange, dateKey: string): boolean {
@@ -240,15 +244,20 @@ export function buildSingaporeHolidayGroups(
     return [];
   }
 
-  const freedaySet = buildFreedaySet(entries);
+  const publicHolidaySet = buildPublicHolidaySet(entries);
   const workdayMembers: string[] = [];
-  const freedayMembers: string[] = [];
+  const nonWorkDayMembers: string[] = [];
+  const publicHolidayMembers: string[] = [];
 
   for (const item of items) {
     const date = dateStrToDate(item.id, dateRange);
     const dateKey = formatDate(date);
-    if (freedaySet.has(dateKey) || date.getUTCDay() === 0 || date.getUTCDay() === 6) {
-      freedayMembers.push(item.id);
+    const isPublicHoliday = publicHolidaySet.has(dateKey);
+    if (isPublicHoliday) {
+      publicHolidayMembers.push(item.id);
+    }
+    if (isPublicHoliday || date.getUTCDay() === 0 || date.getUTCDay() === 6) {
+      nonWorkDayMembers.push(item.id);
     } else {
       workdayMembers.push(item.id);
     }
@@ -257,13 +266,18 @@ export function buildSingaporeHolidayGroups(
   return [
     {
       id: SINGAPORE_WORKDAY_GROUP_ID,
-      description: 'Singapore workdays imported from the data.gov.sg public holidays dataset',
+      description: 'Singapore workdays (weekdays excluding public holidays) imported from the data.gov.sg public holidays dataset',
       members: workdayMembers,
     },
     {
-      id: SINGAPORE_FREEDAY_GROUP_ID,
-      description: 'Singapore freedays imported from the data.gov.sg public holidays dataset',
-      members: freedayMembers,
+      id: SINGAPORE_NONWORKDAY_GROUP_ID,
+      description: 'Singapore non-work days (public holidays and weekends) imported from the data.gov.sg public holidays dataset',
+      members: nonWorkDayMembers,
+    },
+    {
+      id: SINGAPORE_PH_GROUP_ID,
+      description: 'Singapore public holidays imported from the data.gov.sg public holidays dataset',
+      members: publicHolidayMembers,
     },
   ];
 }

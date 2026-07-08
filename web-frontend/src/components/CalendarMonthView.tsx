@@ -31,7 +31,7 @@ export function getCalendarDayCategoryClassName(
   const dayType = getSingaporeDayType(date, entries);
   const isWeekend = date.getUTCDay() === 0 || date.getUTCDay() === 6;
 
-  if (dayType === 'FREEDAY' && !isWeekend) {
+  if (dayType === 'NON-WORKDAY' && !isWeekend) {
     return 'bg-amber-50/70 font-medium text-amber-800 hover:bg-sky-100 hover:text-sky-900';
   }
   if (dayType === 'WORKDAY' && isWeekend) {
