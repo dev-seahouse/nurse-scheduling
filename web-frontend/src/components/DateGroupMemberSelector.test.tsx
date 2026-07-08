@@ -22,6 +22,19 @@ import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import { DateGroupMemberSelector } from '@/components/DateGroupMemberSelector';
 
+vi.mock('@/hooks/useSingaporeHolidays', () => ({
+  useSingaporeHolidays: () => ({
+    status: 'ready',
+    entries: [
+      { date: '2026-05-01', name: 'Labour Day', isObserved: false },
+      { date: '2026-05-31', name: 'Vesak Day', isObserved: false },
+      { date: '2026-06-01', name: 'Vesak Day', isObserved: true },
+    ],
+    error: null,
+    refetch: vi.fn(),
+  }),
+}));
+
 const mayItems = Array.from({ length: 31 }, (_, index) => ({
   id: String(index + 1).padStart(2, '0'),
   description: `May ${index + 1}`,
@@ -71,23 +84,27 @@ describe('DateGroupMemberSelector', () => {
     expect(onToggle).toHaveBeenCalledWith('02');
   });
 
-  it('shows normal weekends and Taiwan calendar exceptions without overriding selection', () => {
+  it('shows normal weekends and Singapore holiday exceptions without overriding selection', () => {
     render(
       <DateGroupMemberSelector
         dateRange={{
-          startDate: new Date('2025-02-01'),
-          endDate: new Date('2025-02-28'),
+          startDate: new Date('2026-05-01'),
+          endDate: new Date('2026-05-31'),
         }}
-        items={mayItems.slice(0, 28)}
+        items={mayItems}
         selectedIds={['09']}
         onToggle={vi.fn()}
       />,
     );
 
-    expect(screen.getByRole('button', { name: '08' })).toHaveClass('bg-white', 'text-slate-700');
+    // 2026-05-01 (Fri): Labour Day → weekday FREEDAY with medium text.
+    expect(screen.getByRole('button', { name: '01' })).toHaveClass('font-medium', 'text-amber-800');
+    // 2026-05-09 (Sat): plain weekend FREEDAY → amber background, not selected.
     expect(screen.getByRole('button', { name: '09' })).toHaveClass('bg-blue-600', 'text-white');
+    // 2026-05-16 (Sat): plain weekend FREEDAY → amber background.
     expect(screen.getByRole('button', { name: '16' })).toHaveClass('bg-amber-50/70', 'text-amber-700');
-    expect(screen.getByRole('button', { name: '28' })).toHaveClass('bg-amber-50/70', 'font-medium', 'text-amber-800');
+    // 2026-05-31 (Sun): Vesak Day, also a weekend FREEDAY → amber weekend styling (no medium text).
+    expect(screen.getByRole('button', { name: '31' })).toHaveClass('bg-amber-50/70', 'text-amber-700');
   });
 
   it('preserves drag selection across calendar dates', () => {

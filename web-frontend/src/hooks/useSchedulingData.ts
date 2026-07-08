@@ -25,7 +25,7 @@ import { Item, Group, DateRange, ShiftTypeRequirementsPreference, ShiftRequestPr
 import { ItemGroupEditorPageData } from '@/components/ItemGroupEditorPage';
 import { isReservedKeyword, API_VERSION, ALL } from '@/utils/keywords';
 import { setLatestSchedulingStateForSentry } from '@/utils/sentrySchedulingState';
-import { buildTaiwanHolidayGroups, isTaiwanHolidayRangeSupported } from '@/utils/taiwanHolidays';
+import { buildSingaporeHolidayGroups, isSingaporeHolidayRangeSupported, SingaporeHolidayEntry } from '@/utils/singaporeHolidays';
 import { ERROR_SHOULD_NOT_HAPPEN } from '@/constants/errors';
 import { getUniqueCopyLabel } from '@/utils/duplicateLabels';
 import { getOrderedEntries } from '@/utils/entityOrdering';
@@ -48,7 +48,8 @@ export type SchedulingDataValue = ReturnType<typeof useSchedulingDataInternal>;
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 interface UpdateDateRangeOptions {
-  importTaiwanHolidays?: boolean;
+  importSingaporeHolidays?: boolean;
+  singaporeHolidayEntries?: SingaporeHolidayEntry[];
 }
 
 export function useSchedulingDataInternal() {
@@ -174,8 +175,10 @@ export function useSchedulingDataInternal() {
     const removedDateIds = [...currentDateIds].filter(id => !newDateIds.has(id));
     const generatedDateItems =
       dateRange.startDate && dateRange.endDate ? _generateDateItems(dateRange.startDate, dateRange.endDate) : [];
-    const shouldImportTaiwanHolidays =
-      options.importTaiwanHolidays === true && isTaiwanHolidayRangeSupported(dateRange);
+    const singaporeEntries = options.singaporeHolidayEntries ?? [];
+    const shouldImportSingaporeHolidays =
+      options.importSingaporeHolidays === true
+      && isSingaporeHolidayRangeSupported(dateRange, singaporeEntries);
 
     // Update the date range
     updateState(prevState => {
@@ -185,8 +188,8 @@ export function useSchedulingDataInternal() {
         members: group.members.filter(memberId => !removedDateIds.includes(memberId))
       }));
 
-      if (shouldImportTaiwanHolidays) {
-        newGroups = replaceDateGroups(newGroups, buildTaiwanHolidayGroups(generatedDateItems, dateRange));
+      if (shouldImportSingaporeHolidays) {
+        newGroups = replaceDateGroups(newGroups, buildSingaporeHolidayGroups(generatedDateItems, dateRange, singaporeEntries));
       }
 
       const nextState = {

@@ -619,6 +619,119 @@ def shift_affinity(ctx: Context, preference: models.ShiftAffinityPreference, pre
                     )
 
 
+def shift_type_covering(ctx: Context, preference: models.ShiftTypeCoveringPreference, preference_idx):
+    """Hard covering implication.
+
+    For every date in `date` and every shift type in `shiftTypes`:
+        if any `preceptees` person is assigned to the shift on that date,
+        then at least one `preceptors` person must also be assigned.
+
+    Encoded as a Boolean OR:
+        (sum(preceptors shifts) >= 1)  OR  (sum(preceptees shifts) < 1)
+
+    This expresses the implication "preceptee on (d, s)  =>  preceptor on (d, s)"
+    as a hard constraint the solver cannot violate.
+    """
+    ds = utils.parse_dates(preference.date, ctx.map_did_d, ctx.dates.range)
+    if not isinstance(preference.preceptors, list):
+        raise ValueError(f"Preceptors must be a list, but got {type(preference.preceptors)}")
+    if not isinstance(preference.preceptees, list):
+        raise ValueError(f"Preceptees must be a list, but got {type(preference.preceptees)}")
+    if not isinstance(preference.shiftTypes, list):
+        raise ValueError(f"Shift types must be a list, but got {type(preference.shiftTypes)}")
+
+    # Flatten nested lists (same convention as shift_affinity).
+    def _flatten_persons(raw_list):
+        out = []
+        for element in raw_list:
+            ids = element if isinstance(element, list) else [element]
+            parsed = sorted(set(itertools.chain.from_iterable(
+                utils.parse_pids(pid, ctx.map_pid_p) for pid in ids
+            )))
+            if parsed:
+                out.append(parsed)
+        return out
+
+    def _flatten_shifts(raw_list):
+        out = []
+        for element in raw_list:
+            ids = element if isinstance(element, list) else [element]
+            parsed = sorted(set(itertools.chain.from_iterable(
+                utils.parse_sids(sid, ctx.map_sid_s) for sid in ids
+            )))
+            if parsed:
+                out.append(parsed)
+        return out
+
+    preceptors_groups = _flatten_persons(preference.preceptors)
+    preceptees_groups = _flatten_persons(preference.preceptees)
+    shift_type_groups = _flatten_shifts(preference.shiftTypes)
+
+    if not preceptors_groups:
+        raise ValueError("Preceptors list must contain at least one valid person or group.")
+    if not preceptees_groups:
+        raise ValueError("Preceptees list must contain at least one valid person or group.")
+    if not shift_type_groups:
+        raise ValueError("Shift types list must contain at least one valid shift type.")
+
+    for d in ds:
+        for ss in shift_type_groups:
+            # Cross-product: a covering rule fires for every (preceptor group,
+            # preceptee group, shift type group) tuple. This makes a preceptee
+            # covered if AT LEAST ONE of their listed preceptor-groups has a
+            # member working that shift that day.
+            for preceptor_group in preceptors_groups:
+                for preceptee_group in preceptees_groups:
+                    preceptor_vars = [ctx.shifts[(d, s, p)] for s in ss for p in preceptor_group]
+                    preceptee_vars = [ctx.shifts[(d, s, p)] for s in ss for p in preceptee_group]
+
+                    any_preceptee_name = (
+                        f"pref_{preference_idx}_d_{d}_preceptee_group"
+                        f"_{preceptors_groups.index(preceptor_group)}"
+                        f"_{preceptees_groups.index(preceptee_group)}"
+                        f"_s_{ss[0]}_any"
+                    )
+                    at_least_one_preceptor_name = (
+                        f"pref_{preference_idx}_d_{d}_preceptor_group"
+                        f"_{preceptors_groups.index(preceptor_group)}"
+                        f"_{preceptees_groups.index(preceptee_group)}"
+                        f"_s_{ss[0]}_cover"
+                    )
+
+                    ctx.model_vars[any_preceptee_name] = any_preceptee = (
+                        ctx.solver.create_bool_var_with_constraint(
+                            any_preceptee_name,
+                            sum(preceptee_vars),
+                            constants.Operator.GE,
+                            1,
+                            (0, len(preceptee_vars)),
+                        )
+                    )
+                    ctx.model_vars[at_least_one_preceptor_name] = at_least_one_preceptor = (
+                        ctx.solver.create_bool_var_with_constraint(
+                            at_least_one_preceptor_name,
+                            sum(preceptor_vars),
+                            constants.Operator.GE,
+                            1,
+                            (0, len(preceptor_vars)),
+                        )
+                    )
+
+                    # Hard covering: (some preceptor working) OR (no preceptee working)
+                    ctx.solver.add_constraint(any_preceptee <= at_least_one_preceptor)
+
+                    ctx.reports.append(
+                        Report(any_preceptee_name, any_preceptee, lambda x: x == 1)
+                    )
+                    ctx.reports.append(
+                        Report(
+                            at_least_one_preceptor_name,
+                            at_least_one_preceptor,
+                            lambda x: x == 1,
+                        )
+                    )
+
+
 PREFERENCE_TYPES_TO_FUNC = {
     models.SHIFT_TYPE_REQUIREMENT: shift_type_requirements,
     models.AT_MOST_ONE_SHIFT_PER_DAY: all_people_work_at_most_one_shift_per_day,
@@ -626,4 +739,5 @@ PREFERENCE_TYPES_TO_FUNC = {
     models.SHIFT_TYPE_SUCCESSIONS: shift_type_successions,
     models.SHIFT_COUNT: shift_count,
     models.SHIFT_AFFINITY: shift_affinity,
+    models.SHIFT_TYPE_COVERING: shift_type_covering,
 }

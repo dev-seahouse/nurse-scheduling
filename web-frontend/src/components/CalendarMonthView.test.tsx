@@ -20,6 +20,12 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { CalendarDayButton, getCalendarDayCategoryClassName } from '@/components/CalendarMonthView';
 
+const SAMPLE_ENTRIES = [
+  { date: '2026-05-01', name: 'Labour Day', isObserved: false },
+  { date: '2026-05-31', name: 'Vesak Day', isObserved: false },
+  { date: '2026-06-01', name: 'Vesak Day', isObserved: true },
+];
+
 describe('CalendarMonthView primitives', () => {
   it('responds only to left-mouse selection handlers', () => {
     const onMouseDown = vi.fn();
@@ -59,18 +65,24 @@ describe('CalendarMonthView primitives', () => {
     expect(fireEvent.keyDown(button, { key: ' ' })).toBe(false);
   });
 
-  it('uses quiet normal-day styling and text emphasis for Taiwan calendar exceptions', () => {
-    expect(getCalendarDayCategoryClassName(new Date('2025-02-08')))
-      .toContain('font-medium text-slate-700');
-    expect(getCalendarDayCategoryClassName(new Date('2025-02-09')))
-      .toContain('bg-amber-50/70');
-    expect(getCalendarDayCategoryClassName(new Date('2025-02-28')))
+  it('uses quiet normal-day styling and text emphasis for Singapore holiday exceptions', () => {
+    // 2026-05-01 (Fri) is Labour Day: weekday FREEDAY → amber background + medium text
+    expect(getCalendarDayCategoryClassName(new Date('2026-05-01'), SAMPLE_ENTRIES))
       .toContain('font-medium text-amber-800');
-    expect(getCalendarDayCategoryClassName(new Date('2025-02-10')))
-      .toContain('text-slate-700');
-    expect(getCalendarDayCategoryClassName(new Date('2027-02-07')))
+    // 2026-05-02 (Sat) is a plain weekend FREEDAY → amber background, no medium text
+    expect(getCalendarDayCategoryClassName(new Date('2026-05-02'), SAMPLE_ENTRIES))
       .toContain('bg-amber-50/70');
-    expect(getCalendarDayCategoryClassName(new Date('2027-02-08')))
-      .toContain('bg-white');
+    // 2026-05-04 (Mon) is an ordinary workday → plain white background
+    expect(getCalendarDayCategoryClassName(new Date('2026-05-04'), SAMPLE_ENTRIES))
+      .toContain('text-slate-700');
+    // Dates outside the supported range fall back to default weekend/workday styling.
+    expect(getCalendarDayCategoryClassName(new Date('2029-01-01'), SAMPLE_ENTRIES))
+      .toContain('text-slate-700');
+  });
+
+  it('returns plain styling when no Singapore entries are loaded', () => {
+    // 2026-05-01 (Fri): no data → ordinary workday styling.
+    expect(getCalendarDayCategoryClassName(new Date('2026-05-01'), []))
+      .toContain('text-slate-700');
   });
 });

@@ -154,6 +154,7 @@ export const SHIFT_REQUEST = 'shift request';
 export const SHIFT_TYPE_SUCCESSIONS = 'shift type successions';
 export const SHIFT_COUNT = 'shift count';
 export const SHIFT_AFFINITY = 'shift affinity';
+export const SHIFT_TYPE_COVERING = 'shift type covering';
 
 export const SUPPORTED_EXPRESSIONS = ['|x - T|^2', 'x >= T', 'x <= T', 'x > T', 'x < T', 'x = T'] as const;
 export type ShiftCountTypeCoefficient = [string, number];
@@ -225,6 +226,16 @@ export interface ShiftAffinityPreference extends BasePreference {
   weight: number;
 }
 
+export interface ShiftTypeCoveringPreference extends BasePreference {
+  type: typeof SHIFT_TYPE_COVERING;
+  description?: string;
+  date?: string[];
+  preceptors: (string | string[])[];
+  preceptees: (string | string[])[];
+  shiftTypes: (string | string[])[];
+  weight: number;
+}
+
 // Union type for all preference types in the flattened structure
 export type Preference =
   | AtMostOneShiftPerDayPreference
@@ -232,4 +243,5 @@ export type Preference =
   | ShiftRequestPreference
   | ShiftTypeSuccessionsPreference
   | ShiftCountPreference
-  | ShiftAffinityPreference;
+  | ShiftAffinityPreference
+  | ShiftTypeCoveringPreference;

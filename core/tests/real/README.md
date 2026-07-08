@@ -11,8 +11,6 @@ Run real-world checks explicitly:
 ```sh
 cd core
 pytest --log-cli-level=INFO tests/real/schedule_ortools_cp_sat.py
-pytest --log-cli-level=INFO tests/real/schedule_pulp_cbc.py
-pytest --log-cli-level=INFO tests/real/schedule_pulp_cuopt.py
 ```
 
 To print model-build timing and variable/constraint deltas for the large
@@ -22,7 +20,6 @@ scenario, run:
 cd core
 python -m nurse_scheduling.cli \
   tests/testcases/real/large-ward-with-87-people-2025-11.yaml \
-  --solver ortools/cp-sat \
   --timeout 10 \
   --show-model-build-stats
 ```
@@ -34,7 +31,6 @@ to JSON Lines:
 cd core
 python -m nurse_scheduling.cli \
   tests/testcases/real/large-ward-with-87-people-2025-11.yaml \
-  --solver ortools/cp-sat \
   --timeout 180 \
   --progress-output progress.jsonl
 ```
@@ -47,7 +43,6 @@ cd core
 python tests/real/run_schedule.py \
   tests/testcases/real/large-ward-with-87-people-2025-11.yaml \
   --prettify \
-  --solver ortools/cp-sat \
   --timeout 180 \
   --progress-output progress.jsonl
 ```

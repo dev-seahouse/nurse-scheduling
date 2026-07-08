@@ -55,7 +55,6 @@ class OptimizeJob:
     created_at: datetime
     input_name: str
     client_uuid: str
-    solver: str
     prettify: bool | None
     timeout: int | None
     started_at: datetime | None = None
@@ -109,10 +108,6 @@ def _is_terminal_job_status(status: OptimizeJobStatus) -> bool:
         OptimizeJobStatus.CANCELLED,
         OptimizeJobStatus.FAILED,
     }
-
-
-def _solver_supports_job_stop(solver: str) -> bool:
-    return solver == "ortools/cp-sat"
 
 
 def _publish_job_event(job: OptimizeJob, event: str, data: dict[str, Any]) -> None:
@@ -227,7 +222,6 @@ def _get_optimize_job(job_id: str) -> OptimizeJob:
 def _create_optimize_job(
     input_name: str,
     client_uuid: str,
-    solver: str,
     prettify: bool | None,
     timeout: int | None,
 ) -> OptimizeJob:
@@ -245,7 +239,6 @@ def _create_optimize_job(
             created_at=utc_now(),
             input_name=input_name,
             client_uuid=client_uuid,
-            solver=solver,
             prettify=prettify,
             timeout=timeout,
         )
@@ -253,9 +246,8 @@ def _create_optimize_job(
         _optimize_jobs[job.id] = job
     _refresh_queue_positions()
     server_logger.info(
-        "[server:job] queued job_id=%s solver=%s timeout=%s input_name=%s queue_position=%s client_uuid=%s",
+        "[server:job] queued job_id=%s timeout=%s input_name=%s queue_position=%s client_uuid=%s",
         job.id,
-        job.solver,
         job.timeout,
         job.input_name,
         job.queue_position,
@@ -352,15 +344,6 @@ def _request_optimize_job_stop(job_id: str, *, finish_now: bool) -> OptimizeJob:
                 status_code=409,
                 detail={
                     "message": "Optimization job has already finished.",
-                    "status": job.status.value,
-                },
-            )
-        if job.status != OptimizeJobStatus.QUEUED and not _solver_supports_job_stop(job.solver):
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "message": "This solver does not support cancelling or finishing early.",
-                    "solver": job.solver,
                     "status": job.status.value,
                 },
             )
@@ -462,7 +445,6 @@ def _optimize_job_response(job: OptimizeJob) -> dict[str, Any]:
         "status": job.status.value,
         "queuePosition": job.queue_position,
         "inputName": job.input_name,
-        "solver": job.solver,
         "prettify": job.prettify,
         "timeout": job.timeout,
         "score": job.score,

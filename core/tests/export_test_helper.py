@@ -130,7 +130,7 @@ def _get_golden_xlsx_path(filepath: str, prettify: bool) -> str:
     return f"{filepath[:-5]}.xlsx"
 
 
-def run_export_xlsx_regression_test(solver: str, prettify: bool) -> None:
+def run_export_xlsx_regression_test(prettify: bool) -> None:
     tests = get_regression_testcases()
     total_tests = len(tests)
     error_count = 0
@@ -141,8 +141,7 @@ def run_export_xlsx_regression_test(solver: str, prettify: bool) -> None:
         if base_filepath in IGNORE_TESTS:
             continue
         logging.info(
-            "[%s][prettify=%s] Testing XLSX '%s' ...",
-            solver,
+            "[prettify=%s] Testing XLSX '%s' ...",
             prettify,
             filepath[len(TESTCASES_DIR) + 1 :],
         )
@@ -155,7 +154,7 @@ def run_export_xlsx_regression_test(solver: str, prettify: bool) -> None:
             with open(f"{test_dir}/{base_filepath}.txt", "r", encoding="utf-8") as f:
                 expected_err = f.read()
             with pytest.raises((ValidationError, ValueError)) as exc_info:
-                nurse_scheduling.schedule(file_content, solver=solver, prettify=prettify)
+                nurse_scheduling.schedule(file_content, prettify=prettify)
             logging.info(f"Expected error: {expected_err.strip()}")
             logging.info(f"Actual error: {str(exc_info.value)}")
             assert expected_err.strip() in str(exc_info.value), (
@@ -166,7 +165,6 @@ def run_export_xlsx_regression_test(solver: str, prettify: bool) -> None:
         try:
             df, _solution, _score, _status, cell_export_info = nurse_scheduling.schedule(
                 file_content,
-                solver=solver,
                 prettify=prettify,
             )
             if df is None:
@@ -204,4 +202,4 @@ def run_export_xlsx_regression_test(solver: str, prettify: bool) -> None:
     if error_count > 0:
         pytest.fail(f"Found {error_count}/{total_tests} errors during XLSX export testing")
     else:
-        logging.info("All %s tests passed for solver=%s prettify=%s", total_tests, solver, prettify)
+        logging.info("All %s tests passed for prettify=%s", total_tests, prettify)

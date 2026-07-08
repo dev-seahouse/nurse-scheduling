@@ -24,13 +24,19 @@ import userEvent from '@testing-library/user-event';
 import DatePage from '@/app/dates/page';
 import Navigation from '@/components/Navigation';
 import { UnsavedEditingStateProvider } from '@/utils/unsavedEditingState';
+import type { SingaporeHolidayEntry } from '@/utils/singaporeHolidays';
 
 const mockUseSchedulingData = vi.hoisted(() => vi.fn());
+const mockUseSingaporeHolidays = vi.hoisted(() => vi.fn());
 const mockPush = vi.hoisted(() => vi.fn());
 const mockUsePathname = vi.hoisted(() => vi.fn());
 
 vi.mock('@/hooks/useSchedulingData', () => ({
   useSchedulingData: mockUseSchedulingData,
+}));
+
+vi.mock('@/hooks/useSingaporeHolidays', () => ({
+  useSingaporeHolidays: mockUseSingaporeHolidays,
 }));
 
 vi.mock('next/navigation', () => ({
@@ -57,6 +63,12 @@ vi.mock('@/components/ItemGroupEditorPage', () => ({
   ),
 }));
 
+const SAMPLE_ENTRIES: SingaporeHolidayEntry[] = [
+  { date: '2026-05-01', name: 'Labour Day', isObserved: false },
+  { date: '2026-05-31', name: 'Vesak Day', isObserved: false },
+  { date: '2026-06-01', name: 'Vesak Day', isObserved: true },
+];
+
 function renderDatePage() {
   return render(
     <UnsavedEditingStateProvider>
@@ -67,6 +79,7 @@ function renderDatePage() {
 
 describe('DatePage', () => {
   const updateDateRange = vi.fn();
+  const refetch = vi.fn().mockResolvedValue(undefined);
 
   beforeEach(() => {
     mockPush.mockReset();
@@ -92,6 +105,12 @@ describe('DatePage', () => {
       removeItemFromGroup: vi.fn(),
       reorderItems: vi.fn(),
       reorderGroups: vi.fn(),
+    });
+    mockUseSingaporeHolidays.mockReturnValue({
+      status: 'ready',
+      entries: SAMPLE_ENTRIES,
+      error: null,
+      refetch,
     });
   });
 
@@ -143,16 +162,16 @@ describe('DatePage', () => {
     expect(updateDateRange).not.toHaveBeenCalled();
   });
 
-  it('disables Taiwan holiday import for unsupported ranges and saves with import disabled', async () => {
+  it('disables Singapore holiday import for unsupported ranges and saves with import disabled', async () => {
     const user = userEvent.setup();
 
     renderDatePage();
 
     await user.click(screen.getByRole('button', { name: /set date range/i }));
-    fireEvent.change(screen.getByLabelText('Start Date *'), { target: { value: '2027-01-01' } });
-    fireEvent.change(screen.getByLabelText('End Date *'), { target: { value: '2027-01-31' } });
+    fireEvent.change(screen.getByLabelText('Start Date *'), { target: { value: '2019-01-01' } });
+    fireEvent.change(screen.getByLabelText('End Date *'), { target: { value: '2019-01-31' } });
 
-    const importCheckbox = screen.getByRole('checkbox', { name: /import taiwan holidays into date groups/i });
+    const importCheckbox = screen.getByRole('checkbox', { name: /import singapore holidays into date groups/i });
     expect(importCheckbox).toBeDisabled();
     expect(screen.getByText(/Available only when the selected date range stays within/)).toBeInTheDocument();
 
@@ -160,14 +179,14 @@ describe('DatePage', () => {
 
     expect(updateDateRange).toHaveBeenCalledWith(
       {
-        startDate: new Date('2027-01-01'),
-        endDate: new Date('2027-01-31'),
+        startDate: new Date('2019-01-01'),
+        endDate: new Date('2019-01-31'),
       },
-      { importTaiwanHolidays: false },
+      expect.objectContaining({ importSingaporeHolidays: false }),
     );
   });
 
-  it('shows supported Taiwan holiday entries and imports them by default on save', async () => {
+  it('shows supported Singapore holiday entries and imports them by default on save', async () => {
     const user = userEvent.setup();
 
     renderDatePage();
@@ -179,7 +198,7 @@ describe('DatePage', () => {
     const holidayDetails = screen.getByText(/holiday change/i);
     expect(holidayDetails).toBeInTheDocument();
     expect(screen.getByText(/2026-05-01 \(Fri\)/)).toBeInTheDocument();
-    expect(screen.getByText('FREEDAY')).toBeInTheDocument();
+    expect(screen.getAllByText('FREEDAY').length).toBeGreaterThan(0);
 
     await user.click(screen.getByRole('button', { name: 'Update' }));
 
@@ -188,8 +207,53 @@ describe('DatePage', () => {
         startDate: new Date('2026-05-01'),
         endDate: new Date('2026-05-31'),
       },
-      { importTaiwanHolidays: true },
+      expect.objectContaining({
+        importSingaporeHolidays: true,
+        singaporeHolidayEntries: SAMPLE_ENTRIES,
+      }),
     );
+  });
+
+  it('disables import and shows retry when Singapore holidays fail to load', async () => {
+    mockUseSingaporeHolidays.mockReturnValue({
+      status: 'error',
+      entries: [],
+      error: 'Failed to fetch Singapore public holidays: HTTP 503',
+      refetch,
+    });
+
+    const user = userEvent.setup();
+    renderDatePage();
+
+    await user.click(screen.getByRole('button', { name: /set date range/i }));
+    fireEvent.change(screen.getByLabelText('Start Date *'), { target: { value: '2026-05-01' } });
+    fireEvent.change(screen.getByLabelText('End Date *'), { target: { value: '2026-05-31' } });
+
+    const importCheckbox = screen.getByRole('checkbox', { name: /import singapore holidays into date groups/i });
+    expect(importCheckbox).toBeDisabled();
+    expect(screen.getByText(/Failed to fetch Singapore public holidays/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /retry/i }));
+    expect(refetch).toHaveBeenCalled();
+  });
+
+  it('shows a loading message while Singapore holidays are being fetched', async () => {
+    mockUseSingaporeHolidays.mockReturnValue({
+      status: 'loading',
+      entries: [],
+      error: null,
+      refetch,
+    });
+
+    const user = userEvent.setup();
+    renderDatePage();
+
+    await user.click(screen.getByRole('button', { name: /set date range/i }));
+    fireEvent.change(screen.getByLabelText('Start Date *'), { target: { value: '2026-05-01' } });
+    fireEvent.change(screen.getByLabelText('End Date *'), { target: { value: '2026-05-31' } });
+
+    expect(screen.getByText(/Loading Singapore public holidays/)).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: /import singapore holidays into date groups/i })).toBeDisabled();
   });
 
   it('updates the start and end dates by dragging across the calendar', async () => {
@@ -324,7 +388,7 @@ describe('DatePage', () => {
     expect(screen.queryByText(/days selected/)).not.toBeInTheDocument();
   });
 
-  it('respects turning Taiwan holiday import off before save', async () => {
+  it('respects turning Singapore holiday import off before save', async () => {
     const user = userEvent.setup();
 
     renderDatePage();
@@ -333,7 +397,7 @@ describe('DatePage', () => {
     fireEvent.change(screen.getByLabelText('Start Date *'), { target: { value: '2026-05-01' } });
     fireEvent.change(screen.getByLabelText('End Date *'), { target: { value: '2026-05-31' } });
 
-    const importCheckbox = screen.getByRole('checkbox', { name: /import taiwan holidays into date groups/i });
+    const importCheckbox = screen.getByRole('checkbox', { name: /import singapore holidays into date groups/i });
     await user.click(importCheckbox);
     expect(importCheckbox).not.toBeChecked();
 
@@ -344,11 +408,11 @@ describe('DatePage', () => {
         startDate: new Date('2026-05-01'),
         endDate: new Date('2026-05-31'),
       },
-      { importTaiwanHolidays: false },
+      expect.objectContaining({ importSingaporeHolidays: false }),
     );
   });
 
-  it('still requests Taiwan holiday import when editable holiday groups already exist', async () => {
+  it('still requests Singapore holiday import when editable holiday groups already exist', async () => {
     const user = userEvent.setup();
 
     mockUseSchedulingData.mockReturnValue({
@@ -387,7 +451,7 @@ describe('DatePage', () => {
         startDate: new Date('2026-05-01'),
         endDate: new Date('2026-05-31'),
       },
-      { importTaiwanHolidays: true },
+      expect.objectContaining({ importSingaporeHolidays: true }),
     );
   });
 
@@ -411,23 +475,20 @@ describe('DatePage', () => {
     expect(screen.getByLabelText('End Date *')).toHaveValue('2026-01-31');
   });
 
-  it('shows and then clears full-month and Labor Day warnings as the draft range changes', async () => {
+  it('clears the full-month warning as the draft range changes', async () => {
     const user = userEvent.setup();
 
     renderDatePage();
 
     await user.click(screen.getByRole('button', { name: /set date range/i }));
-    fireEvent.change(screen.getByLabelText('Start Date *'), { target: { value: '2024-05-01' } });
-    fireEvent.change(screen.getByLabelText('End Date *'), { target: { value: '2024-05-15' } });
+    fireEvent.change(screen.getByLabelText('Start Date *'), { target: { value: '2026-05-01' } });
+    fireEvent.change(screen.getByLabelText('End Date *'), { target: { value: '2026-05-15' } });
 
     expect(screen.getByText(/Selected dates do not represent a full month/)).toBeInTheDocument();
-    expect(screen.getByText(/Taiwan holiday import does not include Labor Day on May 1/)).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('Start Date *'), { target: { value: '2026-05-01' } });
     fireEvent.change(screen.getByLabelText('End Date *'), { target: { value: '2026-05-31' } });
 
     expect(screen.queryByText(/Selected dates do not represent a full month/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Taiwan holiday import does not include Labor Day on May 1/)).not.toBeInTheDocument();
   });
 
   it('warns before switching tabs while the date range draft is open', async () => {

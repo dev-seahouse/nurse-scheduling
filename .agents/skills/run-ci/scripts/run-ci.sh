@@ -18,9 +18,6 @@ set -x
   pytest \
     --cov=nurse_scheduling \
     --log-cli-level=DEBUG \
-    --ignore-glob='*pulp_cbc.py' \
-    --ignore-glob='*pulp_cuopt.py' \
-    --ignore=tests/test_solver_pulp_progress.py \
     tests
 )
 

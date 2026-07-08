@@ -29,6 +29,7 @@ import {
   useCalendarMonthNavigation,
   useMouseDragLifecycle,
 } from '@/components/CalendarMonthView';
+import { useSingaporeHolidays } from '@/hooks/useSingaporeHolidays';
 import { CheckboxList } from '@/components/CheckboxList';
 import { DateRange, Item } from '@/types/scheduling';
 import { getDateIdForRange } from '@/utils/calendar';
@@ -47,6 +48,7 @@ export function DateGroupMemberSelector({
   onToggle,
 }: DateGroupMemberSelectorProps) {
   const [view, setView] = useState<'calendar' | 'list'>('calendar');
+  const { entries: singaporeEntries } = useSingaporeHolidays();
   const {
     activeMonth,
     setActiveMonth,
@@ -192,7 +194,7 @@ export function DateGroupMemberSelector({
                     ? 'cursor-not-allowed bg-transparent text-gray-300'
                     : isSelected
                       ? 'bg-blue-600 font-medium text-white hover:bg-blue-700'
-                      : getCalendarDayCategoryClassName(date)
+                      : getCalendarDayCategoryClassName(date, singaporeEntries)
                 }
               />
             );

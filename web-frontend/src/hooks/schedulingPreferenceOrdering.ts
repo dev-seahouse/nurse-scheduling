@@ -17,7 +17,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { ShiftTypeRequirementsPreference, ShiftRequestPreference, Preference, AT_MOST_ONE_SHIFT_PER_DAY, SHIFT_TYPE_REQUIREMENT, SHIFT_REQUEST, SHIFT_TYPE_SUCCESSIONS, SHIFT_COUNT, SHIFT_AFFINITY } from '@/types/scheduling';
+import { ShiftTypeRequirementsPreference, ShiftRequestPreference, Preference, AT_MOST_ONE_SHIFT_PER_DAY, SHIFT_TYPE_REQUIREMENT, SHIFT_REQUEST, SHIFT_TYPE_SUCCESSIONS, SHIFT_COUNT, SHIFT_AFFINITY, SHIFT_TYPE_COVERING } from '@/types/scheduling';
 import { ALL } from '@/utils/keywords';
 import { compareFirstIdByEntryOrder, getOrderedEntries, sortIdsByEntryOrder, sortPairsByFirstIdEntryOrder } from '@/utils/entityOrdering';
 import { hasNestedReferenceIds, ReferenceIdTree } from '@/utils/referenceIds';
@@ -95,11 +95,22 @@ export function normalizePreferenceOrder(pref: Preference, state: SchedulingStat
       shiftTypes: sortFlatOrPreserveNestedReferenceIds(pref.shiftTypes as ReferenceIdTree[] | undefined, shiftTypeEntries) as typeof pref.shiftTypes,
     };
   }
+  if (pref.type === SHIFT_TYPE_COVERING) {
+    // The covering fields are always stored in their canonical nested form
+    // (top-level element = equation, inner list = OR alternative) — see the
+    // editor at app/shift-type-coverings/page.tsx:158. The nested trees are
+    // preserved as-is, matching the shift-affinity convention; only the flat
+    // `date` array is re-sorted by entity order.
+    return {
+      ...pref,
+      date: pref.date === undefined ? undefined : sortIdsByEntryOrder(pref.date, dateEntries),
+    };
+  }
   return pref;
 }
 
 export function sortPreferencesByType(preferences: Preference[]): Preference[] {
-  const typeOrder = [AT_MOST_ONE_SHIFT_PER_DAY, SHIFT_TYPE_REQUIREMENT, SHIFT_REQUEST, SHIFT_TYPE_SUCCESSIONS, SHIFT_COUNT, SHIFT_AFFINITY];
+  const typeOrder = [AT_MOST_ONE_SHIFT_PER_DAY, SHIFT_TYPE_REQUIREMENT, SHIFT_REQUEST, SHIFT_TYPE_SUCCESSIONS, SHIFT_COUNT, SHIFT_AFFINITY, SHIFT_TYPE_COVERING];
   return [...preferences].sort((a, b) => typeOrder.indexOf(a.type) - typeOrder.indexOf(b.type));
 }
 

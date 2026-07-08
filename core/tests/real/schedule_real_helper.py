@@ -83,7 +83,7 @@ def _critical_request_notes(cell_export_info) -> list[str]:
     return [note for notes in comments.values() for note in notes if note.startswith(CRITICAL_REQUEST_NOTE_PREFIX)]
 
 
-def run_real_schedule_smoke_test(solver: str):
+def run_real_schedule_smoke_test():
     file_content = _add_critical_request_formatting_rules(REAL_TESTCASE.read_bytes())
     zero_critical_notes_since = None
 
@@ -109,15 +109,11 @@ def run_real_schedule_smoke_test(solver: str):
             and time.monotonic() - zero_critical_notes_since >= ZERO_CRITICAL_NOTES_STABILITY_SECONDS
         )
 
-    supports_progress_stop = solver == "ortools/cp-sat"
-
     df, solution, score, status, cell_export_info = nurse_scheduling.schedule(
         file_content,
         prettify=True,
-        solver=solver,
-        timeout=None if supports_progress_stop else SMOKE_TEST_TIMEOUT_SECONDS,
-        progress_callback=track_critical_notes if supports_progress_stop else None,
-        should_stop=has_stable_zero_critical_notes if supports_progress_stop else None,
+        progress_callback=track_critical_notes,
+        should_stop=has_stable_zero_critical_notes,
     )
 
     critical_notes = _critical_request_notes(cell_export_info)

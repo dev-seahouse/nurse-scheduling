@@ -32,6 +32,7 @@ SHIFT_REQUEST = "shift request"
 SHIFT_TYPE_SUCCESSIONS = "shift type successions"
 SHIFT_COUNT = "shift count"
 SHIFT_AFFINITY = "shift affinity"
+SHIFT_TYPE_COVERING = "shift type covering"
 
 
 def validate_weight(weight: int | float) -> int | float:
@@ -300,6 +301,33 @@ class ShiftAffinityPreference(BasePreference):
         return validate_weight(v)
 
 
+class ShiftTypeCoveringPreference(BasePreference):
+    """Hard constraint: whenever any person in `preceptees` is assigned to any
+    of the `shiftTypes` on a specified `date`, at least one person in
+    `preceptors` must also be assigned to one of the `shiftTypes` on that
+    same date.
+
+    Example use case: a preceptee (student nurse) must always have a
+    preceptor (senior nurse) on the same shift when they work.
+
+    Unlike ShiftAffinity, this is a *hard* implication. The solver cannot
+    leave a preceptee working without a preceptor present.
+    """
+    model_config = ConfigDict(extra="forbid")
+    type: Annotated[str, Field(pattern=f"^{SHIFT_TYPE_COVERING}$")] = SHIFT_TYPE_COVERING
+    description: str | None = None
+    date: (int | str | datetime.date) | list[int | str | datetime.date] | None = None  # Single date or list of dates; None = ALL
+    preceptors: list[int | str | list[int | str]]  # At least one of these must cover the preceptee's shift
+    preceptees: list[int | str | list[int | str]]  # These trigger the covering requirement
+    shiftTypes: list[str | list[str]]  # Shift type IDs this rule applies to
+    weight: int | float = Field(default=1)  # For float can only be .inf or -.inf
+
+    @field_validator("weight")
+    @classmethod
+    def validate_weight_field(cls, v):
+        return validate_weight(v)
+
+
 class NurseSchedulingData(BaseModel):
     model_config = ConfigDict(extra="forbid")
     appVersion: str | None = None
@@ -316,6 +344,7 @@ class NurseSchedulingData(BaseModel):
         | ShiftTypeRequirementsPreference
         | ShiftCountPreference
         | ShiftAffinityPreference
+        | ShiftTypeCoveringPreference
     ]
     export: ExportConfig = Field(default_factory=ExportConfig)
 

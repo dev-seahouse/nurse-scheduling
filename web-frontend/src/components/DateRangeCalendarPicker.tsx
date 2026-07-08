@@ -27,6 +27,7 @@ import {
   useCalendarMonthNavigation,
   useMouseDragLifecycle,
 } from '@/components/CalendarMonthView';
+import { useSingaporeHolidays } from '@/hooks/useSingaporeHolidays';
 import { DateRange } from '@/types/scheduling';
 import {
   endOfMonth,
@@ -49,6 +50,7 @@ export default function DateRangeCalendarPicker({
   onChange,
   onActiveEndpointChange,
 }: DateRangeCalendarPickerProps) {
+  const { entries: singaporeEntries } = useSingaporeHolidays();
   const {
     activeMonth: calendarMonth,
     setActiveMonth: setCalendarMonth,
@@ -173,7 +175,7 @@ export default function DateRangeCalendarPicker({
                   ? 'bg-indigo-100 text-indigo-900'
                   : isSelected
                     ? 'bg-blue-600 font-medium text-white hover:bg-blue-700'
-                    : getCalendarDayCategoryClassName(date)
+                    : getCalendarDayCategoryClassName(date, singaporeEntries)
             }
           />
         );

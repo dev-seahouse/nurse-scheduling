@@ -22,5 +22,5 @@
 from .schedule_real_helper import run_real_schedule_smoke_test
 
 
-def test_real_schedule_ortools_finds_solution_without_critical_violations():
-    run_real_schedule_smoke_test("ortools/cp-sat")
+def test_real_schedule_finds_solution_without_critical_violations():
+    run_real_schedule_smoke_test()

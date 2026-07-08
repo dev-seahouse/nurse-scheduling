@@ -22,6 +22,7 @@ import {
   SHIFT_AFFINITY,
   SHIFT_COUNT,
   SHIFT_REQUEST,
+  SHIFT_TYPE_COVERING,
   SHIFT_TYPE_REQUIREMENT,
   SHIFT_TYPE_SUCCESSIONS
 } from '@/types/scheduling';
@@ -70,6 +71,14 @@ function anonymizePreference(pref: Preference, anonymizeIds: (ids: string[]) => 
       ...pref,
       people1: mapReferenceIdTree(pref.people1 as ReferenceIdTree, anonymizeId) as typeof pref.people1,
       people2: mapReferenceIdTree(pref.people2 as ReferenceIdTree, anonymizeId) as typeof pref.people2
+    };
+  }
+  if (pref.type === SHIFT_TYPE_COVERING) {
+    return {
+      ...pref,
+      preceptors: mapReferenceIdTree(pref.preceptors as ReferenceIdTree, anonymizeId) as typeof pref.preceptors,
+      preceptees: mapReferenceIdTree(pref.preceptees as ReferenceIdTree, anonymizeId) as typeof pref.preceptees,
+      shiftTypes: mapReferenceIdTree(pref.shiftTypes as ReferenceIdTree, anonymizeId) as typeof pref.shiftTypes,
     };
   }
   return pref;

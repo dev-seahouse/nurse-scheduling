@@ -54,11 +54,11 @@ def test_scheduler_rejects_unsupported_country():
         scheduler.schedule(content)
 
 
-def test_scheduler_rejects_unsupported_solver_selector():
-    content = _load_valid_yaml_bytes()
+def test_scheduler_accepts_singapore_country():
+    content = _load_valid_yaml_bytes() + b"\ncountry: SG\n"
 
-    with pytest.raises(ValueError, match="Unsupported solver configuration"):
-        scheduler.schedule(content, solver="invalid/backend")
+    # Should not raise; the scheduler only validates the country code without using it.
+    scheduler.schedule(content)
 
 
 def test_scheduler_rejects_invalid_avoid_solution_value():

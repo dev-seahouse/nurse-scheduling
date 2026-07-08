@@ -33,7 +33,13 @@ import {
   ShiftRequestPreference,
 } from '@/types/scheduling';
 import { ALL, OFF } from '@/utils/keywords';
-import { TAIWAN_FREEDAY_GROUP_ID, TAIWAN_WORKDAY_GROUP_ID } from '@/utils/taiwanHolidays';
+import { SINGAPORE_FREEDAY_GROUP_ID, SINGAPORE_WORKDAY_GROUP_ID, SingaporeHolidayEntry } from '@/utils/singaporeHolidays';
+
+const SAMPLE_SINGAPORE_ENTRIES: SingaporeHolidayEntry[] = [
+  { date: '2026-05-01', name: 'Labour Day', isObserved: false },
+  { date: '2026-05-31', name: 'Vesak Day', isObserved: false },
+  { date: '2026-06-01', name: 'Vesak Day', isObserved: true },
+];
 
 const STORAGE_KEY = 'nurse-scheduling-data';
 
@@ -553,12 +559,12 @@ describe('useSchedulingData', () => {
     });
   });
 
-  it('imports and replaces Taiwan holiday groups when explicitly requested on a supported range', async () => {
+  it('imports and replaces Singapore holiday groups when explicitly requested on a supported range', async () => {
     const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
 
     act(() => {
-      result.current.addGroup(DataType.DATES, result.current.dateData, TAIWAN_WORKDAY_GROUP_ID, [], 'Old workday group');
-      result.current.addGroup(DataType.DATES, result.current.dateData, TAIWAN_FREEDAY_GROUP_ID, [], 'Old freeday group');
+      result.current.addGroup(DataType.DATES, result.current.dateData, SINGAPORE_WORKDAY_GROUP_ID, [], 'Old workday group');
+      result.current.addGroup(DataType.DATES, result.current.dateData, SINGAPORE_FREEDAY_GROUP_ID, [], 'Old freeday group');
     });
 
     act(() => {
@@ -567,20 +573,23 @@ describe('useSchedulingData', () => {
           startDate: new Date('2026-05-01'),
           endDate: new Date('2026-05-04'),
         },
-        { importTaiwanHolidays: true },
+        {
+          importSingaporeHolidays: true,
+          singaporeHolidayEntries: SAMPLE_SINGAPORE_ENTRIES,
+        },
       );
     });
 
     await waitFor(() => {
-      const workdayGroup = result.current.dateData.groups.find(group => group.id === TAIWAN_WORKDAY_GROUP_ID);
-      const freedayGroup = result.current.dateData.groups.find(group => group.id === TAIWAN_FREEDAY_GROUP_ID);
+      const workdayGroup = result.current.dateData.groups.find(group => group.id === SINGAPORE_WORKDAY_GROUP_ID);
+      const freedayGroup = result.current.dateData.groups.find(group => group.id === SINGAPORE_FREEDAY_GROUP_ID);
 
       expect(workdayGroup).toEqual(expect.objectContaining({ members: ['04'] }));
       expect(freedayGroup).toEqual(expect.objectContaining({ members: ['01', '02', '03'] }));
     });
   });
 
-  it('preserves unrelated custom date groups while replacing existing Taiwan holiday groups', async () => {
+  it('preserves unrelated custom date groups while replacing existing Singapore holiday groups', async () => {
     const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
 
     act(() => {
@@ -590,8 +599,8 @@ describe('useSchedulingData', () => {
           range: { startDate: '2026-05-01', endDate: '2026-05-04' },
           groups: [
             { id: 'MY_GROUP', members: ['01', '04'], description: 'Keep me' },
-            { id: TAIWAN_WORKDAY_GROUP_ID, members: ['02'], description: 'Old workday group' },
-            { id: TAIWAN_FREEDAY_GROUP_ID, members: ['03'], description: 'Old freeday group' },
+            { id: SINGAPORE_WORKDAY_GROUP_ID, members: ['02'], description: 'Old workday group' },
+            { id: SINGAPORE_FREEDAY_GROUP_ID, members: ['03'], description: 'Old freeday group' },
           ],
         },
       });
@@ -603,7 +612,10 @@ describe('useSchedulingData', () => {
           startDate: new Date('2026-05-01'),
           endDate: new Date('2026-05-04'),
         },
-        { importTaiwanHolidays: true },
+        {
+          importSingaporeHolidays: true,
+          singaporeHolidayEntries: SAMPLE_SINGAPORE_ENTRIES,
+        },
       );
     });
 
@@ -611,16 +623,16 @@ describe('useSchedulingData', () => {
       expect(result.current.dateData.groups.find(group => group.id === 'MY_GROUP')).toEqual(
         expect.objectContaining({ members: ['01', '04'], description: 'Keep me' }),
       );
-      expect(result.current.dateData.groups.find(group => group.id === TAIWAN_WORKDAY_GROUP_ID)).toEqual(
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_WORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: ['04'] }),
       );
-      expect(result.current.dateData.groups.find(group => group.id === TAIWAN_FREEDAY_GROUP_ID)).toEqual(
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_FREEDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: ['01', '02', '03'] }),
       );
     });
   });
 
-  it('preserves custom manual date items while overwriting only generated Taiwan holiday groups', async () => {
+  it('preserves custom manual date items while overwriting only generated Singapore holiday groups', async () => {
     const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
 
     act(() => {
@@ -631,8 +643,8 @@ describe('useSchedulingData', () => {
           items: [{ id: 'SPECIAL', description: 'Manual special day' }],
           groups: [
             { id: 'MANUAL', members: ['SPECIAL'], description: 'Keep me' },
-            { id: TAIWAN_WORKDAY_GROUP_ID, members: ['02'], description: 'Old workday group' },
-            { id: TAIWAN_FREEDAY_GROUP_ID, members: ['03'], description: 'Old freeday group' },
+            { id: SINGAPORE_WORKDAY_GROUP_ID, members: ['02'], description: 'Old workday group' },
+            { id: SINGAPORE_FREEDAY_GROUP_ID, members: ['03'], description: 'Old freeday group' },
           ],
         },
       });
@@ -644,7 +656,10 @@ describe('useSchedulingData', () => {
           startDate: new Date('2026-05-01'),
           endDate: new Date('2026-05-04'),
         },
-        { importTaiwanHolidays: true },
+        {
+          importSingaporeHolidays: true,
+          singaporeHolidayEntries: SAMPLE_SINGAPORE_ENTRIES,
+        },
       );
     });
 
@@ -653,35 +668,38 @@ describe('useSchedulingData', () => {
       expect(result.current.dateData.groups.find(group => group.id === 'MANUAL')).toEqual(
         expect.objectContaining({ members: ['SPECIAL'], description: 'Keep me' }),
       );
-      expect(result.current.dateData.groups.find(group => group.id === TAIWAN_WORKDAY_GROUP_ID)?.description).not.toBe('Old workday group');
-      expect(result.current.dateData.groups.find(group => group.id === TAIWAN_FREEDAY_GROUP_ID)?.description).not.toBe('Old freeday group');
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_WORKDAY_GROUP_ID)?.description).not.toBe('Old workday group');
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_FREEDAY_GROUP_ID)?.description).not.toBe('Old freeday group');
     });
   });
 
-  it('ignores Taiwan holiday import requests for unsupported ranges', async () => {
+  it('ignores Singapore holiday import requests for unsupported ranges', async () => {
     const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
 
     act(() => {
       result.current.updateDateRange(
         {
-          startDate: new Date('2027-01-01'),
-          endDate: new Date('2027-01-31'),
+          startDate: new Date('2028-01-01'),
+          endDate: new Date('2028-01-31'),
         },
-        { importTaiwanHolidays: true },
+        {
+          importSingaporeHolidays: true,
+          singaporeHolidayEntries: SAMPLE_SINGAPORE_ENTRIES,
+        },
       );
     });
 
     await waitFor(() => {
-      expect(result.current.dateData.groups.find(group => group.id === TAIWAN_WORKDAY_GROUP_ID)).toEqual(
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_WORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: [] }),
       );
-      expect(result.current.dateData.groups.find(group => group.id === TAIWAN_FREEDAY_GROUP_ID)).toEqual(
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_FREEDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: [] }),
       );
     });
   });
 
-  it('undoes and redoes supported Taiwan holiday imports as one visible range change', async () => {
+  it('ignores Singapore holiday import requests when no entries are provided', async () => {
     const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
 
     act(() => {
@@ -690,15 +708,41 @@ describe('useSchedulingData', () => {
           startDate: new Date('2026-05-01'),
           endDate: new Date('2026-05-04'),
         },
-        { importTaiwanHolidays: true },
+        { importSingaporeHolidays: true },
       );
     });
 
     await waitFor(() => {
-      expect(result.current.dateData.groups.find(group => group.id === TAIWAN_WORKDAY_GROUP_ID)).toEqual(
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_WORKDAY_GROUP_ID)).toEqual(
+        expect.objectContaining({ members: [] }),
+      );
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_FREEDAY_GROUP_ID)).toEqual(
+        expect.objectContaining({ members: [] }),
+      );
+    });
+  });
+
+  it('undoes and redoes supported Singapore holiday imports as one visible range change', async () => {
+    const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+
+    act(() => {
+      result.current.updateDateRange(
+        {
+          startDate: new Date('2026-05-01'),
+          endDate: new Date('2026-05-04'),
+        },
+        {
+          importSingaporeHolidays: true,
+          singaporeHolidayEntries: SAMPLE_SINGAPORE_ENTRIES,
+        },
+      );
+    });
+
+    await waitFor(() => {
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_WORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: ['04'] }),
       );
-      expect(result.current.dateData.groups.find(group => group.id === TAIWAN_FREEDAY_GROUP_ID)).toEqual(
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_FREEDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: ['01', '02', '03'] }),
       );
     });
@@ -708,10 +752,10 @@ describe('useSchedulingData', () => {
     });
 
     await waitFor(() => {
-      expect(result.current.dateData.groups.find(group => group.id === TAIWAN_WORKDAY_GROUP_ID)).toEqual(
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_WORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: [] }),
       );
-      expect(result.current.dateData.groups.find(group => group.id === TAIWAN_FREEDAY_GROUP_ID)).toEqual(
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_FREEDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: [] }),
       );
     });
@@ -721,10 +765,10 @@ describe('useSchedulingData', () => {
     });
 
     await waitFor(() => {
-      expect(result.current.dateData.groups.find(group => group.id === TAIWAN_WORKDAY_GROUP_ID)).toEqual(
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_WORKDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: ['04'] }),
       );
-      expect(result.current.dateData.groups.find(group => group.id === TAIWAN_FREEDAY_GROUP_ID)).toEqual(
+      expect(result.current.dateData.groups.find(group => group.id === SINGAPORE_FREEDAY_GROUP_ID)).toEqual(
         expect.objectContaining({ members: ['01', '02', '03'] }),
       );
     });

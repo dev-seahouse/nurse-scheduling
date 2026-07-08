@@ -24,7 +24,7 @@ import { SHIFT_REQUEST } from '@/types/scheduling';
 import type { Group, Item, ShiftRequestPreference } from '@/types/scheduling';
 import type { SchedulingState } from '@/hooks/useSchedulingData';
 import { WEEKDAY, WEEKEND } from '@/utils/keywords';
-import { TAIWAN_FREEDAY_GROUP_ID, TAIWAN_WORKDAY_GROUP_ID } from '@/utils/taiwanHolidays';
+import { SINGAPORE_FREEDAY_GROUP_ID, SINGAPORE_WORKDAY_GROUP_ID } from '@/utils/singaporeHolidays';
 
 type Random = () => number;
 
@@ -42,7 +42,7 @@ function shuffled<T>(values: T[], random: Random): T[] {
 // Report which imported holiday groups are absent so the UI can warn before using fallback groups.
 export function getMissingPreferredScatterDateGroups(dateGroups: Group[]): string[] {
   const dateGroupIds = new Set(dateGroups.map(group => group.id));
-  return [TAIWAN_WORKDAY_GROUP_ID, TAIWAN_FREEDAY_GROUP_ID].filter(id => !dateGroupIds.has(id));
+  return [SINGAPORE_WORKDAY_GROUP_ID, SINGAPORE_FREEDAY_GROUP_ID].filter(id => !dateGroupIds.has(id));
 }
 
 function buildDateCategories(dateItems: Item[], dateGroups: Group[]): Map<string, string> {
@@ -50,7 +50,7 @@ function buildDateCategories(dateItems: Item[], dateGroups: Group[]): Map<string
   // Holiday-aware WORKDAY/FREEDAY groups are preferred. If either is unavailable,
   // classify the whole calendar consistently with generated WEEKDAY/WEEKEND groups.
   const [firstCategoryId, secondCategoryId] = missingPreferredGroups.length === 0
-    ? [TAIWAN_WORKDAY_GROUP_ID, TAIWAN_FREEDAY_GROUP_ID]
+    ? [SINGAPORE_WORKDAY_GROUP_ID, SINGAPORE_FREEDAY_GROUP_ID]
     : [WEEKDAY, WEEKEND];
   // Sets make category membership checks cheap while scanning every concrete date.
   const firstCategory = new Set(dateGroups.find(group => group.id === firstCategoryId)?.members ?? []);

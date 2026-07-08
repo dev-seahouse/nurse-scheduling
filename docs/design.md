@@ -4,7 +4,7 @@
 
 Since I'm not an expert in operations research, I've done some research on suitable (open-source) solvers for this problem. The most popular ones seem to be [Timefold](https://github.com/TimefoldAI/timefold-solver) (previously [OptaPlanner](https://github.com/kiegroup/optaplanner)) and [Google OR-Tools](https://github.com/google/or-tools). There's also a [comparison](https://www.optaplanner.org/competitor/or-tools.html) between the two.
 
-Google OR-Tools is chosen due to the support of Python, which is the language I'm most familiar with this kind of project.
+Google OR-Tools' CP-SAT solver is the only backend we ship. It was chosen for its Python bindings, which is the language this project is built in, and for its ability to prove schedule optimality (or infeasibility) within bounded runtimes at the scale we target.
 
 ### Choice of Input Format
 

@@ -22,16 +22,19 @@
 import { useEffect, useState } from 'react';
 import { FiChevronLeft, FiChevronRight } from 'react-icons/fi';
 import { addMonths, formatMonthYear, getCalendarMonthDates, isSameMonth, startOfMonth, WEEKDAY_LABELS } from '@/utils/calendar';
-import { getTaiwanDayType } from '@/utils/taiwanHolidays';
+import { getSingaporeDayType, SingaporeHolidayEntry } from '@/utils/singaporeHolidays';
 
-export function getCalendarDayCategoryClassName(date: Date): string {
-  const taiwanDayType = getTaiwanDayType(date);
+export function getCalendarDayCategoryClassName(
+  date: Date,
+  entries: SingaporeHolidayEntry[],
+): string {
+  const dayType = getSingaporeDayType(date, entries);
   const isWeekend = date.getUTCDay() === 0 || date.getUTCDay() === 6;
 
-  if (taiwanDayType === 'FREEDAY' && !isWeekend) {
+  if (dayType === 'FREEDAY' && !isWeekend) {
     return 'bg-amber-50/70 font-medium text-amber-800 hover:bg-sky-100 hover:text-sky-900';
   }
-  if (taiwanDayType === 'WORKDAY' && isWeekend) {
+  if (dayType === 'WORKDAY' && isWeekend) {
     return 'bg-white font-medium text-slate-700 hover:bg-sky-100 hover:text-sky-900';
   }
   if (isWeekend) {

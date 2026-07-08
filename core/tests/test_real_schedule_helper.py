@@ -51,7 +51,7 @@ def test_ortools_real_smoke_test_stops_after_progress_has_no_critical_notes(monk
     monkeypatch.setattr(schedule_real_helper.time, "monotonic", fake_monotonic)
     monkeypatch.setattr(schedule_real_helper, "EXPECTED_SOLUTION_SIZE", 1)
 
-    schedule_real_helper.run_real_schedule_smoke_test("ortools/cp-sat")
+    schedule_real_helper.run_real_schedule_smoke_test()
 
-    assert seen["timeout"] is None
+    assert "timeout" not in seen
     assert seen["prettify"] is True

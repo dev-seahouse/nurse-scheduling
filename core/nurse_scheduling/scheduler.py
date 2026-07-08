@@ -57,7 +57,6 @@ def schedule(
     avoid_solution=None,
     prettify=False,
     timeout: int | None = None,
-    solver: str = "ortools/cp-sat",
     progress_callback: Callable[[ScheduleProgress], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
     model_build_stats_callback: Callable[[ModelBuildStats], None] | None = None,
@@ -106,7 +105,7 @@ def schedule(
         ctx.map_pid_p[group.id] = sorted(set().union(*[ctx.map_pid_p[pid] for pid in group.members]))
 
     # Map date string (YYYY-MM-DD) to date index
-    if ctx.country is not None and ctx.country != "TW":
+    if ctx.country is not None and ctx.country != "SG":
         raise ValueError(f"Country {ctx.country} is not supported yet")
     for d in range(ctx.n_days):
         date_obj = ctx.dates.items[d]
@@ -134,26 +133,10 @@ def schedule(
     _emit_phase_progress(progress_callback, "initializing_solver", "Initializing solver model", progress_started_at)
     logging.info("Initializing solver model...")
 
-    solver_backend, solver_engine = solver.lower().split("/", maxsplit=1)
+    from .solver_ortools_cp_sat import ORToolsSolver
 
-    # Initialize the solver based on backend provider + engine
-    if solver_backend == "ortools" and solver_engine == "cp-sat":
-        from .solver_ortools_cp_sat import ORToolsSolver
-
-        logging.info("Using solver backend=%s engine=%s", solver_backend, solver_engine)
-        ctx.solver = ORToolsSolver()
-    elif solver_backend == "pulp" and solver_engine == "cbc":
-        from .solver_pulp_cbc import PuLPSolver
-
-        logging.info("Using solver backend=%s engine=%s", solver_backend, solver_engine)
-        ctx.solver = PuLPSolver()
-    elif solver_backend == "pulp" and solver_engine == "cuopt":
-        from .solver_pulp_cuopt import PuLPCuOptSolver
-
-        logging.info("Using solver backend=%s engine=%s", solver_backend, solver_engine)
-        ctx.solver = PuLPCuOptSolver()
-    else:
-        raise ValueError(f"Unsupported solver configuration: backend={solver_backend!r}, engine={solver_engine!r}")
+    logging.info("Using solver backend=ortools engine=cp-sat")
+    ctx.solver = ORToolsSolver()
 
     _emit_phase_progress(progress_callback, "creating_shift_variables", "Creating shift variables", progress_started_at)
     logging.info("Creating shift variables...")

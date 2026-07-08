@@ -111,13 +111,6 @@ def main():
         help="Maximum running time in seconds. If reached, the solver will stop and the current best result (if any) will be exported.",
     )
     parser.add_argument(
-        "--solver",
-        type=str,
-        default="ortools/cp-sat",
-        choices=["ortools/cp-sat", "pulp/cbc", "pulp/cuopt"],
-        help="Solver selector (e.g., 'ortools/cp-sat', 'pulp/cbc', or 'pulp/cuopt').",
-    )
-    parser.add_argument(
         "--show-model-build-stats",
         action="store_true",
         help="Print model-build timing and variable/constraint deltas for each build step.",
@@ -136,7 +129,6 @@ def main():
     output_path = args.output_path
     prettify = args.prettify
     verbose = args.verbose
-    solver = args.solver
 
     if args.progress_output and not prettify:
         print("Error: --progress-output requires --prettify")
@@ -191,7 +183,6 @@ def main():
             file_content,
             prettify=prettify,
             timeout=args.timeout,
-            solver=solver,
             progress_callback=progress_callback,
             model_build_stats_callback=model_build_stats_callback,
         )

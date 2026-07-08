@@ -17,7 +17,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { DataType, ShiftAffinityPreference, ShiftCountPreference, ShiftRequestPreference, ShiftTypeRequirementsPreference, ShiftTypeSuccessionsPreference, SHIFT_AFFINITY, SHIFT_COUNT, SHIFT_REQUEST, SHIFT_TYPE_REQUIREMENT, SHIFT_TYPE_SUCCESSIONS } from '@/types/scheduling';
+import { DataType, ShiftAffinityPreference, ShiftCountPreference, ShiftRequestPreference, ShiftTypeCoveringPreference, ShiftTypeRequirementsPreference, ShiftTypeSuccessionsPreference, SHIFT_AFFINITY, SHIFT_COUNT, SHIFT_REQUEST, SHIFT_TYPE_COVERING, SHIFT_TYPE_REQUIREMENT, SHIFT_TYPE_SUCCESSIONS } from '@/types/scheduling';
 import { filterReferenceIdTree, mapReferenceIdTree, ReferenceIdTree } from '@/utils/referenceIds';
 import { SchedulingState } from './schedulingState';
 
@@ -102,6 +102,12 @@ export const applyPreferencesForIdChange = (
     [DataType.SHIFT_TYPES]: ['shiftTypes']
   };
 
+  const shiftTypeCoveringFieldMap = {
+    [DataType.DATES]: 'date',
+    [DataType.PEOPLE]: ['preceptors', 'preceptees'],
+    [DataType.SHIFT_TYPES]: 'shiftTypes'
+  };
+
   return {
     ...state,
     preferences: state.preferences.map(pref => {
@@ -154,6 +160,37 @@ export const applyPreferencesForIdChange = (
           }
         });
         return updatedPref;
+      } else if (pref.type === SHIFT_TYPE_COVERING) {
+        const fieldSpec = shiftTypeCoveringFieldMap[dataType];
+        const covering = pref as ShiftTypeCoveringPreference;
+        const updatedPref: ShiftTypeCoveringPreference = { ...covering };
+        if (Array.isArray(fieldSpec)) {
+          for (const fieldName of fieldSpec) {
+            const key = fieldName as keyof ShiftTypeCoveringPreference;
+            (updatedPref[key] as ReferenceIdTree) = renameReferenceIds(
+              covering[key] as ReferenceIdTree,
+              oldId,
+              newId
+            );
+          }
+        } else if (typeof fieldSpec === 'string') {
+          const key = fieldSpec as keyof ShiftTypeCoveringPreference;
+          const value = covering[key];
+          if (Array.isArray(value)) {
+            (updatedPref[key] as ReferenceIdTree) = renameReferenceIds(
+              value as ReferenceIdTree,
+              oldId,
+              newId
+            );
+          } else if (value !== undefined) {
+            (updatedPref[key] as ReferenceIdTree) = renameReferenceIds(
+              value as ReferenceIdTree,
+              oldId,
+              newId
+            );
+          }
+        }
+        return updatedPref;
       }
       return pref;
     })
@@ -200,6 +237,12 @@ export const applyPreferencesForIdDeletion = (
     [DataType.DATES]: ['date'],
     [DataType.PEOPLE]: ['people1', 'people2'],
     [DataType.SHIFT_TYPES]: ['shiftTypes']
+  };
+
+  const shiftTypeCoveringFieldMap = {
+    [DataType.DATES]: 'date',
+    [DataType.PEOPLE]: ['preceptors', 'preceptees'],
+    [DataType.SHIFT_TYPES]: 'shiftTypes'
   };
 
   const preferences = state.preferences
@@ -252,6 +295,34 @@ export const applyPreferencesForIdDeletion = (
           }
         });
         return updatedPref;
+      } else if (pref.type === SHIFT_TYPE_COVERING) {
+        const fieldSpec = shiftTypeCoveringFieldMap[dataType];
+        const covering = pref as ShiftTypeCoveringPreference;
+        const updatedPref: ShiftTypeCoveringPreference = { ...covering };
+        if (Array.isArray(fieldSpec)) {
+          for (const fieldName of fieldSpec) {
+            const key = fieldName as keyof ShiftTypeCoveringPreference;
+            (updatedPref[key] as ReferenceIdTree) = filterReferenceIds(
+              covering[key] as ReferenceIdTree,
+              deletedIdsSet
+            );
+          }
+        } else if (typeof fieldSpec === 'string') {
+          const key = fieldSpec as keyof ShiftTypeCoveringPreference;
+          const value = covering[key];
+          if (Array.isArray(value)) {
+            (updatedPref[key] as ReferenceIdTree) = filterReferenceIds(
+              value as ReferenceIdTree,
+              deletedIdsSet
+            );
+          } else if (value !== undefined) {
+            (updatedPref[key] as ReferenceIdTree) = filterReferenceIds(
+              value as ReferenceIdTree,
+              deletedIdsSet
+            );
+          }
+        }
+        return updatedPref;
       }
       return pref;
     })
@@ -278,6 +349,11 @@ export const applyPreferencesForIdDeletion = (
           (pref as ShiftAffinityPreference).people1.length > 0 &&
           (pref as ShiftAffinityPreference).people2.length > 0 &&
           (pref as ShiftAffinityPreference).shiftTypes.length > 0;
+      } else if (pref.type === SHIFT_TYPE_COVERING) {
+        const covering = pref as ShiftTypeCoveringPreference;
+        return covering.preceptors.length > 0 &&
+          covering.preceptees.length > 0 &&
+          covering.shiftTypes.length > 0;
       }
       return true;
     });

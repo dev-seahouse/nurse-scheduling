@@ -22,11 +22,13 @@ import {
   SHIFT_AFFINITY,
   SHIFT_COUNT,
   SHIFT_REQUEST,
+  SHIFT_TYPE_COVERING,
   SHIFT_TYPE_REQUIREMENT,
   SHIFT_TYPE_SUCCESSIONS,
   ShiftAffinityPreference,
   ShiftCountPreference,
   ShiftRequestPreference,
+  ShiftTypeCoveringPreference,
   ShiftTypeRequirementsPreference,
   ShiftTypeSuccessionsPreference,
 } from '@/types/scheduling';
@@ -319,5 +321,157 @@ describe('applyReferencesForIdDeletion', () => {
     expect(state.preferences.some(pref => pref.type === SHIFT_TYPE_REQUIREMENT)).toBe(false);
     expect(state.preferences.some(pref => pref.type === SHIFT_REQUEST)).toBe(false);
     expect(count?.countShiftTypes).toBe('N');
+  });
+});
+
+describe('shift type covering cascade', () => {
+  const makeCoveringState = (overrides: Partial<ShiftTypeCoveringPreference> = {}): SchedulingState => {
+    const base = createState();
+    base.preferences = base.preferences.concat({
+      type: SHIFT_TYPE_COVERING,
+      description: 'cover',
+      date: ['2026-01-01'],
+      preceptors: [['P1']],
+      preceptees: [['P2']],
+      shiftTypes: [['D']],
+      weight: 1,
+      ...overrides,
+    });
+    return base;
+  };
+
+  const findCovering = (state: SchedulingState): ShiftTypeCoveringPreference | undefined =>
+    state.preferences.find((pref): pref is ShiftTypeCoveringPreference => pref.type === SHIFT_TYPE_COVERING);
+
+  describe('applyReferencesForIdChange', () => {
+    it('renames person IDs inside the nested preceptors/preceptees arrays', () => {
+      let state = makeCoveringState();
+      state = applyReferencesForIdChange(state, DataType.PEOPLE, 'P1', 'Alice');
+      state = applyReferencesForIdChange(state, DataType.PEOPLE, 'P2', 'Bob');
+
+      const covering = findCovering(state);
+      expect(covering).toBeDefined();
+      expect(covering!.preceptors).toEqual([['Alice']]);
+      expect(covering!.preceptees).toEqual([['Bob']]);
+    });
+
+    it('renames shift-type IDs inside the nested shiftTypes array', () => {
+      let state = makeCoveringState();
+      state = applyReferencesForIdChange(state, DataType.SHIFT_TYPES, 'D', 'Day');
+
+      const covering = findCovering(state);
+      expect(covering!.shiftTypes).toEqual([['Day']]);
+    });
+
+    it('renames date IDs inside the covering date field', () => {
+      let state = makeCoveringState();
+      state = applyReferencesForIdChange(state, DataType.DATES, '2026-01-01', 'Jan1');
+
+      const covering = findCovering(state);
+      expect(covering!.date).toEqual(['Jan1']);
+    });
+
+    it('leaves other covering preferences unchanged when their references do not match', () => {
+      const state = applyReferencesForIdChange(makeCoveringState(), DataType.PEOPLE, 'X', 'Y');
+      const covering = findCovering(state);
+      expect(covering!.preceptors).toEqual([['P1']]);
+      expect(covering!.preceptees).toEqual([['P2']]);
+    });
+  });
+
+  describe('applyReferencesForIdDeletion', () => {
+    it('removes a deleted preceptor from nested preceptors (keeps rule when others remain)', () => {
+      const state = makeCoveringState({ preceptors: [['P1', 'P2']] });
+      const after = applyReferencesForIdDeletion(state, DataType.PEOPLE, ['P1']);
+      const covering = findCovering(after);
+      expect(covering).toBeDefined();
+      expect(covering!.preceptors).toEqual([['P2']]);
+    });
+
+    it('drops the covering rule when preceptors becomes empty', () => {
+      const state = applyReferencesForIdDeletion(makeCoveringState(), DataType.PEOPLE, ['P1']);
+      expect(state.preferences.some(pref => pref.type === SHIFT_TYPE_COVERING)).toBe(false);
+    });
+
+    it('drops the covering rule when preceptees becomes empty', () => {
+      const state = applyReferencesForIdDeletion(makeCoveringState(), DataType.PEOPLE, ['P2']);
+      expect(state.preferences.some(pref => pref.type === SHIFT_TYPE_COVERING)).toBe(false);
+    });
+
+    it('drops the covering rule when shiftTypes becomes empty', () => {
+      const state = applyReferencesForIdDeletion(makeCoveringState(), DataType.SHIFT_TYPES, ['D']);
+      expect(state.preferences.some(pref => pref.type === SHIFT_TYPE_COVERING)).toBe(false);
+    });
+
+    it('keeps the covering rule when only the optional date field is emptied', () => {
+      const state = applyReferencesForIdDeletion(makeCoveringState(), DataType.DATES, ['2026-01-01']);
+      const covering = findCovering(state);
+      expect(covering).toBeDefined();
+      expect(covering!.preceptors).toEqual([['P1']]);
+      expect(covering!.preceptees).toEqual([['P2']]);
+      expect(covering!.shiftTypes).toEqual([['D']]);
+      expect(covering!.date).toEqual([]);
+    });
+
+    it('leaves other covering preferences alone when their references do not match', () => {
+      const state = applyReferencesForIdDeletion(makeCoveringState(), DataType.PEOPLE, ['X']);
+      const covering = findCovering(state);
+      expect(covering!.preceptors).toEqual([['P1']]);
+      expect(covering!.preceptees).toEqual([['P2']]);
+    });
+  });
+
+  describe('flat reference fields (YAML-compatible shape)', () => {
+    // The (string | string[])[] typing permits a flat top-level array as well
+    // as nested trees. The cascade helpers must handle both: a flat array is
+    // a single-element reference tree that recurses into the leaf strings.
+    const makeFlatCoveringState = (): SchedulingState => {
+      const base = createState();
+      base.preferences = base.preferences.concat({
+        type: SHIFT_TYPE_COVERING,
+        description: 'flat',
+        date: ['2026-01-01'],
+        preceptors: ['P1', 'P2'],
+        preceptees: ['P2', 'P1'],
+        shiftTypes: ['D', 'N'],
+        weight: 1,
+      });
+      return base;
+    };
+
+    it('renames person IDs inside flat preceptors / preceptees arrays', () => {
+      let state = makeFlatCoveringState();
+      state = applyReferencesForIdChange(state, DataType.PEOPLE, 'P1', 'Alice');
+      state = applyReferencesForIdChange(state, DataType.PEOPLE, 'P2', 'Bob');
+
+      const covering = findCovering(state);
+      expect(covering!.preceptors).toEqual(['Alice', 'Bob']);
+      expect(covering!.preceptees).toEqual(['Bob', 'Alice']);
+    });
+
+    it('renames shift-type IDs inside a flat shiftTypes array', () => {
+      const state = applyReferencesForIdChange(makeFlatCoveringState(), DataType.SHIFT_TYPES, 'D', 'Day');
+      const covering = findCovering(state);
+      expect(covering!.shiftTypes).toEqual(['Day', 'N']);
+    });
+
+    it('removes a deleted ID from a flat preceptors array and drops the rule when empty', () => {
+      // Deleting both preceptors empties the flat array, which should drop the rule.
+      const state = applyReferencesForIdDeletion(makeFlatCoveringState(), DataType.PEOPLE, ['P1', 'P2']);
+      expect(state.preferences.some(pref => pref.type === SHIFT_TYPE_COVERING)).toBe(false);
+    });
+
+    it('removes a deleted ID from a flat preceptors array and keeps the rule when others remain', () => {
+      const reAdd = makeFlatCoveringState();
+      // makeFlatCoveringState's covering has preceptors ['P1', 'P2']; mutate to
+      // ['P2', 'P1'] so we can verify that deleting P1 (a non-leading entry)
+      // leaves ['P2'] and the rule survives.
+      const covering = reAdd.preferences.find(p => p.type === SHIFT_TYPE_COVERING) as ShiftTypeCoveringPreference;
+      covering.preceptors = ['P2', 'P1'];
+      const after = applyReferencesForIdDeletion(reAdd, DataType.PEOPLE, ['P1']);
+      const kept = after.preferences.find(p => p.type === SHIFT_TYPE_COVERING) as ShiftTypeCoveringPreference | undefined;
+      expect(kept).toBeDefined();
+      expect(kept!.preceptors).toEqual(['P2']);
+    });
   });
 });

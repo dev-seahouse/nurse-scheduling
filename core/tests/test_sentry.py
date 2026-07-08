@@ -96,7 +96,6 @@ def test_capture_optimize_exception_attaches_anonymized_yaml(monkeypatch):
         created_at=datetime.now(UTC),
         input_name="schedule.yaml",
         client_uuid="client_test",
-        solver="ortools/cp-sat",
         prettify=True,
         timeout=60,
     )
@@ -154,7 +153,6 @@ def test_capture_optimize_exception_attaches_unparseable_raw_yaml(monkeypatch):
         created_at=datetime.now(UTC),
         input_name="invalid.yaml",
         client_uuid="client_test",
-        solver="ortools/cp-sat",
         prettify=True,
         timeout=60,
     )

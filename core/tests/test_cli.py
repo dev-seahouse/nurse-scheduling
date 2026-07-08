@@ -116,7 +116,7 @@ def test_cli_rejects_unsupported_output_extension(tmp_path, monkeypatch, capsys)
     assert "Error: Unsupported output file extension '.txt'" in out
 
 
-def test_cli_writes_csv_output_with_solver_and_timeout(tmp_path, monkeypatch, capsys):
+def test_cli_writes_csv_output_with_timeout(tmp_path, monkeypatch, capsys):
     input_file = tmp_path / "input.yaml"
     input_content = b"fake input payload"
     input_file.write_bytes(input_content)
@@ -124,12 +124,11 @@ def test_cli_writes_csv_output_with_solver_and_timeout(tmp_path, monkeypatch, ca
 
     seen = {}
 
-    def fake_schedule(file_content, prettify, timeout, solver, progress_callback, model_build_stats_callback):
+    def fake_schedule(file_content, prettify, timeout, progress_callback, model_build_stats_callback):
         seen["schedule_args"] = {
             "file_content": file_content,
             "prettify": prettify,
             "timeout": timeout,
-            "solver": solver,
             "progress_callback": progress_callback,
             "model_build_stats_callback": model_build_stats_callback,
         }
@@ -151,8 +150,6 @@ def test_cli_writes_csv_output_with_solver_and_timeout(tmp_path, monkeypatch, ca
             str(output_file),
             "--timeout",
             "7",
-            "--solver",
-            "pulp/cbc",
         ],
     )
 
@@ -162,7 +159,6 @@ def test_cli_writes_csv_output_with_solver_and_timeout(tmp_path, monkeypatch, ca
         "file_content": input_content,
         "prettify": False,
         "timeout": 7,
-        "solver": "pulp/cbc",
         "progress_callback": seen["schedule_args"]["progress_callback"],
         "model_build_stats_callback": None,
     }
@@ -181,7 +177,7 @@ def test_cli_writes_progress_jsonl_output(tmp_path, monkeypatch, capsys):
     input_file.write_bytes(b"fake input payload")
     progress_file = tmp_path / "progress.jsonl"
 
-    def fake_schedule(file_content, prettify, timeout, solver, progress_callback, model_build_stats_callback):
+    def fake_schedule(file_content, prettify, timeout, progress_callback, model_build_stats_callback):
         progress_callback(
             SolverProgress(
                 source="ortools/cp-sat:solution-callback",
@@ -252,7 +248,7 @@ def test_cli_no_solution_exits_zero(tmp_path, monkeypatch, capsys):
     input_file = tmp_path / "input.yaml"
     input_file.write_text("apiVersion: alpha\n", encoding="utf-8")
 
-    def fake_schedule(file_content, prettify, timeout, solver, progress_callback, model_build_stats_callback):
+    def fake_schedule(file_content, prettify, timeout, progress_callback, model_build_stats_callback):
         return None, None, None, "INFEASIBLE", {}
 
     monkeypatch.setattr(cli.scheduler, "schedule", fake_schedule)
@@ -272,7 +268,7 @@ def test_cli_writes_xlsx_output(tmp_path, monkeypatch, capsys):
     output_file = tmp_path / "result.xlsx"
     seen = {}
 
-    def fake_schedule(file_content, prettify, timeout, solver, progress_callback, model_build_stats_callback):
+    def fake_schedule(file_content, prettify, timeout, progress_callback, model_build_stats_callback):
         return "df", {}, 0, "OPTIMAL", {"styles": {(1, 1): {"backgroundColor": "#ffffff"}}, "comments": {}}
 
     def fake_export_to_excel(df, buffer, cell_export_info):
@@ -298,7 +294,7 @@ def test_cli_prints_final_comments_from_export_comments(tmp_path, monkeypatch, c
     input_file = tmp_path / "input.yaml"
     input_file.write_text("apiVersion: alpha\n", encoding="utf-8")
 
-    def fake_schedule(file_content, prettify, timeout, solver, progress_callback, model_build_stats_callback):
+    def fake_schedule(file_content, prettify, timeout, progress_callback, model_build_stats_callback):
         return "df", {}, 0, "OPTIMAL", {"styles": {}, "comments": {(1, 2): ["first", "second"], (3, 4): ["third"]}}
 
     monkeypatch.setattr(cli.scheduler, "schedule", fake_schedule)
@@ -313,7 +309,7 @@ def test_cli_show_model_build_stats_prints_scheduler_events(tmp_path, monkeypatc
     input_file = tmp_path / "input.yaml"
     input_file.write_text("apiVersion: alpha\n", encoding="utf-8")
 
-    def fake_schedule(file_content, prettify, timeout, solver, progress_callback, model_build_stats_callback):
+    def fake_schedule(file_content, prettify, timeout, progress_callback, model_build_stats_callback):
         assert progress_callback is None
         assert model_build_stats_callback is not None
         model_build_stats_callback(

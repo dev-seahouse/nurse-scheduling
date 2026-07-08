@@ -23,6 +23,7 @@
 import { useMemo, useState } from 'react';
 import { FiAlertCircle } from 'react-icons/fi';
 import { useSchedulingData } from '@/hooks/useSchedulingData';
+import { useSingaporeHolidays } from '@/hooks/useSingaporeHolidays';
 import DateRangeCalendarPicker from '@/components/DateRangeCalendarPicker';
 import { DateGroupMemberSelector } from '@/components/DateGroupMemberSelector';
 import ItemGroupEditorPage from '@/components/ItemGroupEditorPage';
@@ -30,11 +31,10 @@ import ToggleButton from '@/components/ToggleButton';
 import { Mode } from '@/constants/modes';
 import { DateRange, DataType } from '@/types/scheduling';
 import {
-  getTaiwanHolidaySupportLabel,
-  getTaiwanHolidayEntriesInRange,
-  includesUnimportedTaiwanLaborDay,
-  isTaiwanHolidayRangeSupported,
-} from '@/utils/taiwanHolidays';
+  getSingaporeHolidayEntriesInRange,
+  getSingaporeHolidaySupportLabel,
+  isSingaporeHolidayRangeSupported,
+} from '@/utils/singaporeHolidays';
 import { useTabSwitchWarning } from '@/utils/unsavedEditingState';
 import { isFullCalendarMonth } from '@/utils/calendar';
 
@@ -55,6 +55,7 @@ export default function DatePage() {
     reorderItems,
     reorderGroups,
   } = useSchedulingData();
+  const singaporeHolidays = useSingaporeHolidays();
 
   // Mode state for date range and item group editing
   const [mode, setMode] = useState<Mode>(Mode.NORMAL);
@@ -62,7 +63,7 @@ export default function DatePage() {
     startDate: undefined,
     endDate: undefined,
   });
-  const [shouldImportTaiwanHolidays, setShouldImportTaiwanHolidays] = useState(true);
+  const [shouldImportSingaporeHolidays, setShouldImportSingaporeHolidays] = useState(true);
   const [activeCalendarEndpoint, setActiveCalendarEndpoint] = useState<'start' | 'end'>('start');
   // Error messages for start date and end date
   const [errors, setErrors] = useState<{[key: string]: string}>({});
@@ -77,14 +78,12 @@ export default function DatePage() {
   const formatHolidayWeekday = (dateStr: string): string => {
     return new Date(dateStr).toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' });
   };
-  const shouldShowHolidayTypeBadge = (dateStr: string, isFreeday: boolean): boolean => {
-    const weekday = new Date(dateStr).getUTCDay();
-    const isWeekend = weekday === 0 || weekday === 6;
-    return isWeekend ? !isFreeday : isFreeday;
-  };
-  const isTaiwanHolidayImportSupported = useMemo(
-    () => isTaiwanHolidayRangeSupported(draft),
-    [draft]
+  const isHolidaysReady = singaporeHolidays.status === 'ready';
+  const isHolidaysLoading = singaporeHolidays.status === 'loading';
+  const isHolidaysError = singaporeHolidays.status === 'error';
+  const isSingaporeHolidayImportSupported = useMemo(
+    () => isHolidaysReady && isSingaporeHolidayRangeSupported(draft, singaporeHolidays.entries),
+    [draft, isHolidaysReady, singaporeHolidays.entries],
   );
   useTabSwitchWarning(mode === Mode.DATE_RANGE_EDITING);
 
@@ -97,19 +96,14 @@ export default function DatePage() {
     if (!isFullCalendarMonth(draft)) {
       newWarnings.dateRange = 'Selected dates do not represent a full month (first day to last day of the same month)';
     }
-    if (shouldImportTaiwanHolidays && isTaiwanHolidayImportSupported && includesUnimportedTaiwanLaborDay(draft)) {
-      newWarnings.laborDay = 'Taiwan holiday import does not include Labor Day on May 1. If needed, please manually adjust it after update.';
-    }
 
     return newWarnings;
-  }, [draft, isTaiwanHolidayImportSupported, mode, shouldImportTaiwanHolidays]);
+  }, [draft, mode]);
 
-  const taiwanHolidaySupportLabel = getTaiwanHolidaySupportLabel();
-  const includedTaiwanHolidays = useMemo(
-    () => getTaiwanHolidayEntriesInRange(draft).filter(
-      (entry) => shouldShowHolidayTypeBadge(entry.date, entry.isFreeday)
-    ),
-    [draft]
+  const singaporeHolidaySupportLabel = getSingaporeHolidaySupportLabel(singaporeHolidays.entries);
+  const includedSingaporeHolidays = useMemo(
+    () => getSingaporeHolidayEntriesInRange(draft, singaporeHolidays.entries),
+    [draft, singaporeHolidays.entries],
   );
   const selectedDayCount = draft.startDate && draft.endDate
     ? Math.ceil((draft.endDate.getTime() - draft.startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1
@@ -121,7 +115,7 @@ export default function DatePage() {
     "The end date must be after the start date",
     "Dates are automatically generated based on your date range",
     "Create groups to organize dates (e.g., \"Weekdays\", \"Weekends\", \"Workdays\", \"Freedays\")",
-    "When enabled, updating the date range can create or overwrite editable Taiwan holiday date groups such as WORKDAY and FREEDAY",
+    "When enabled, updating the date range can create or overwrite editable Singapore holiday date groups such as WORKDAY and FREEDAY",
     "Click and drag through checkboxes to quickly select multiple dates when adding or editing",
     "Drag and drop to reorder groups",
     "Double-click to edit names or descriptions",
@@ -153,7 +147,8 @@ export default function DatePage() {
         startDate: draft.startDate,
         endDate: draft.endDate,
       }, {
-        importTaiwanHolidays: shouldImportTaiwanHolidays && isTaiwanHolidayImportSupported,
+        importSingaporeHolidays: shouldImportSingaporeHolidays && isSingaporeHolidayImportSupported,
+        singaporeHolidayEntries: singaporeHolidays.entries,
       });
       setMode(Mode.NORMAL);
     }
@@ -172,7 +167,7 @@ export default function DatePage() {
           endDate: dateData.range.endDate,
         });
       }
-      setShouldImportTaiwanHolidays(true);
+      setShouldImportSingaporeHolidays(true);
       setActiveCalendarEndpoint('start');
       setErrors({});
     }
@@ -187,7 +182,7 @@ export default function DatePage() {
         endDate: dateData.range.endDate,
       });
     }
-    setShouldImportTaiwanHolidays(true);
+    setShouldImportSingaporeHolidays(true);
     setActiveCalendarEndpoint('start');
     setErrors({});
   };
@@ -329,49 +324,59 @@ export default function DatePage() {
           <section className="rounded-md border border-gray-200 bg-gray-50 p-4" aria-labelledby="holiday-import-heading">
             <div className="flex items-start gap-3">
               <input
-                id="importTaiwanHolidays"
+                id="importSingaporeHolidays"
                 type="checkbox"
-                checked={shouldImportTaiwanHolidays && isTaiwanHolidayImportSupported}
-                disabled={!isTaiwanHolidayImportSupported}
-                onChange={(e) => setShouldImportTaiwanHolidays(e.target.checked)}
+                checked={shouldImportSingaporeHolidays && isSingaporeHolidayImportSupported}
+                disabled={!isSingaporeHolidayImportSupported}
+                onChange={(e) => setShouldImportSingaporeHolidays(e.target.checked)}
                 className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
               />
               <div className="min-w-0 flex-1">
-                <label id="holiday-import-heading" htmlFor="importTaiwanHolidays" className="text-sm font-medium text-gray-900">
-                  Import Taiwan holidays into date groups
+                <label id="holiday-import-heading" htmlFor="importSingaporeHolidays" className="text-sm font-medium text-gray-900">
+                  Import Singapore holidays into date groups
                 </label>
                 <p className="mt-1 text-sm text-gray-600">
-                  Saving with this enabled will create or overwrite normal editable Taiwan holiday date groups once, including WORKDAY and FREEDAY.
+                  Saving with this enabled will create or overwrite normal editable Singapore holiday date groups once, including WORKDAY and FREEDAY.
                 </p>
-                {!isTaiwanHolidayImportSupported && (
+                {isHolidaysLoading && (
+                  <p className="mt-2 text-sm text-gray-500">Loading Singapore public holidays…</p>
+                )}
+                {isHolidaysError && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-red-700">
+                    <FiAlertCircle className="h-4 w-4 shrink-0" />
+                    <span>{singaporeHolidays.error ?? 'Failed to load Singapore holidays.'}</span>
+                    <button
+                      type="button"
+                      onClick={() => { void singaporeHolidays.refetch(); }}
+                      className="rounded border border-red-300 bg-white px-2 py-0.5 text-xs font-medium text-red-700 hover:bg-red-50"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+                {!isSingaporeHolidayImportSupported && !isHolidaysLoading && !isHolidaysError && (
                   <p className="mt-2 text-sm text-amber-700">
-                    Available only when the selected date range stays within {taiwanHolidaySupportLabel}.
+                    Available only when the selected date range stays within {singaporeHolidaySupportLabel}.
                   </p>
                 )}
-                {isTaiwanHolidayImportSupported && includedTaiwanHolidays.length === 0 && (
+                {isSingaporeHolidayImportSupported && includedSingaporeHolidays.length === 0 && (
                   <p className="mt-2 text-sm text-gray-500">No holiday changes in the selected range.</p>
                 )}
-                {isTaiwanHolidayImportSupported && includedTaiwanHolidays.length > 0 && (
+                {isSingaporeHolidayImportSupported && includedSingaporeHolidays.length > 0 && (
                   <details open className="mt-3 rounded-md border border-gray-200 bg-white">
                     <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50">
-                      {includedTaiwanHolidays.length} holiday {includedTaiwanHolidays.length === 1 ? 'change' : 'changes'}
+                      {includedSingaporeHolidays.length} holiday {includedSingaporeHolidays.length === 1 ? 'change' : 'changes'}
                     </summary>
                     <div className="max-h-56 space-y-2 overflow-y-auto border-t border-gray-200 p-3">
-                      {includedTaiwanHolidays.map((entry) => (
+                      {includedSingaporeHolidays.map((entry) => (
                         <div key={entry.date} className="rounded border border-gray-100 bg-gray-50 px-3 py-2 text-sm">
                           <div className="flex items-center justify-between gap-3">
                             <span className="font-mono text-gray-700">{entry.date} ({formatHolidayWeekday(entry.date)})</span>
-                            {shouldShowHolidayTypeBadge(entry.date, entry.isFreeday) && (
-                              <span className={`rounded px-2 py-0.5 text-xs font-medium ${
-                                entry.isFreeday
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : 'bg-blue-100 text-blue-800'
-                              }`}>
-                                {entry.isFreeday ? 'FREEDAY' : 'WORKDAY'}
-                              </span>
-                            )}
+                            <span className="rounded bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800">
+                              {entry.isObserved ? 'OBSERVED' : 'FREEDAY'}
+                            </span>
                           </div>
-                          <div className="mt-1 text-gray-600">{entry.reason}</div>
+                          <div className="mt-1 text-gray-600">{entry.name}</div>
                         </div>
                       ))}
                     </div>

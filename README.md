@@ -32,8 +32,7 @@ This early work-in-progress project provides basic privacy protections, includin
 
 - [bun](https://bun.com/docs/installation) (for frontend development).
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) (for backend development).
-- [Docker](https://docs.docker.com/engine/install/ubuntu/) (optional, for Docker-based development environment and GPU solver).
-- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) (optional, for GPU solver).
+- [Docker](https://docs.docker.com/engine/install/ubuntu/) (optional, for Docker-based development environment).
 
 These are not hard requirements. If you know what you are doing, you can also use other tools to manage dependencies, such as [`nvm`/`npm`](https://nodejs.org/en/download) for Next.js, and `virtualenv` or `conda` for Python.
 
@@ -126,11 +125,9 @@ For Docker-based development environment:
 ```sh
 # build image
 docker build -f docker/Dockerfile -t j3soon/nurse-scheduling:dev .
-# or optionally with cuOpt
-docker build -f docker/Dockerfile.cuopt -t j3soon/nurse-scheduling:dev-cuopt .
 ```
 
-CPU solver:
+Solver development container:
 
 ```sh
 # persist Codex/Claude Code/OpenCode auth/config across containers
@@ -150,28 +147,6 @@ docker run --rm -it --network=host \
   -v /etc/localtime:/etc/localtime:ro \
   -v /etc/timezone:/etc/timezone:ro \
   j3soon/nurse-scheduling:dev
-```
-
-GPU solver:
-
-```sh
-# persist Codex/Claude Code/OpenCode auth/config across containers
-mkdir -p ~/docker/.codex
-mkdir -p ~/docker/.claude
-touch ~/docker/.claude.json
-mkdir -p ~/docker/opencode/.config/opencode
-mkdir -p ~/docker/opencode/.local/share/opencode
-# mount project files and Codex/Claude Code/OpenCode config
-docker run --rm -it --gpus all --network=host \
-  -v $(pwd):/app \
-  -v ~/docker/.codex:/root/.codex \
-  -v ~/docker/.claude:/root/.claude \
-  -v ~/docker/.claude.json:/root/.claude.json \
-  -v ~/docker/opencode/.config/opencode:/root/.config/opencode \
-  -v ~/docker/opencode/.local/share/opencode:/root/.local/share/opencode \
-  -v /etc/localtime:/etc/localtime:ro \
-  -v /etc/timezone:/etc/timezone:ro \
-  j3soon/nurse-scheduling:dev-cuopt
 ```
 
 or with X11 forwarding for running Playwright interactive mode in the container:
@@ -273,13 +248,9 @@ bun run lint -- --fix
 
 ### Core
 
-We currently support three solvers: OR-Tools/CP-SAT, PuLP/CBC, and PuLP/cuOpt.
+We use Google OR-Tools' CP-SAT solver as the only backend.
 
-> The PuLP/CBC and PuLP/cuOpt backends are experimental.
-
-- `ortools/cp-sat` is the default solver and the most battle-tested one.
-- `pulp/cbc` is covered by the normal schedule regression suite and opt-in real-world smoke checks.
-- `pulp/cuopt` is the GPU-accelerated solver. Its real-world smoke check is opt-in and skips when the backend is unavailable.
+- `ortools/cp-sat` is the default solver and the only one we ship. It can prove optimality (or infeasibility) within the configured runtime budget at the scales we target.
 
 ```sh
 cd core
@@ -289,7 +260,7 @@ uv venv --python 3.12
 source .venv/bin/activate
 # install dependencies
 uv pip install -r requirements.txt
-# run CLI with default solver (ortools/cp-sat)
+# run CLI with the OR-Tools/CP-SAT solver
 python -m nurse_scheduling.cli <input_file_path> [output_csv_path]
 # for example:
 python -m nurse_scheduling.cli tests/testcases/basics/01_1nurse_1shift_1day.yaml
@@ -297,12 +268,6 @@ python -m nurse_scheduling.cli tests/testcases/basics/01_1nurse_1shift_1day.yaml
 python -m nurse_scheduling.cli <input_file_path> [output_xlsx_path] --verbose --prettify
 # record solver progress as JSON Lines for later plotting
 python -m nurse_scheduling.cli tests/testcases/real/large-ward-with-87-people-2025-11.yaml --verbose --prettify --timeout 180 --progress-output progress.jsonl
-# run CLI with PuLP/CBC solver (experimental)
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver pulp/cbc
-# run CLI with PuLP/cuOpt solver (experimental) and GPU required
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver pulp/cuopt
-# explicit OR-Tools/CP-SAT selector
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/cp-sat
 ```
 
 Run tests:
@@ -311,19 +276,12 @@ Run tests:
 cd core
 # run low-level solver encoding tests
 pytest --log-cli-level=INFO tests/test_solver_ortools_cp_sat.py
-pytest --log-cli-level=INFO tests/test_solver_pulp_cbc.py
-pytest --log-cli-level=INFO tests/test_solver_pulp_cuopt.py
-# run schedule regression tests (OR-Tools / PuLP)
+# run schedule regression tests
 pytest --log-cli-level=INFO tests/test_schedule_ortools_cp_sat.py
-pytest --log-cli-level=INFO tests/test_schedule_pulp_cbc.py
-pytest --log-cli-level=INFO tests/test_schedule_pulp_cuopt.py
 # run the normal core test suite
 pytest --log-cli-level=INFO
 # run the slower bounded real-world scenario checks explicitly
-pytest --log-cli-level=INFO \
-  tests/real/schedule_ortools_cp_sat.py \
-  tests/real/schedule_pulp_cbc.py \
-  tests/real/schedule_pulp_cuopt.py
+pytest --log-cli-level=INFO tests/real/schedule_ortools_cp_sat.py
 # run Python lint checks for core
 ruff check nurse_scheduling tests
 # auto-fix lint issues when possible
@@ -349,9 +307,7 @@ For more debugging output when a test fails:
 ```sh
 cd core
 pytest --log-cli-level=DEBUG tests/test_solver_ortools_cp_sat.py
-pytest --log-cli-level=DEBUG tests/test_solver_pulp_cbc.py
 pytest --log-cli-level=DEBUG tests/test_schedule_ortools_cp_sat.py
-pytest --log-cli-level=DEBUG tests/test_schedule_pulp_cbc.py
 ```
 
 Note that setting `WRITE_TO_CSV=True` in `core/tests/schedule_test_helper.py` is often useful for creating new test cases.

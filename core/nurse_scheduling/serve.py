@@ -55,7 +55,6 @@ from .jobs import (
     _record_client_heartbeat,
     _refresh_queue_positions,
     _request_optimize_job_stop,
-    _solver_supports_job_stop,
     _update_optimize_job,
     utc_now,
 )
@@ -271,9 +270,8 @@ def _run_optimize_job(job_id: str, content: bytes) -> None:
     _refresh_queue_positions()
     queue_wait_seconds = (job.started_at - job.created_at).total_seconds()
     server_logger.info(
-        "[server:job] started job_id=%s solver=%s queue_wait_seconds=%.3f client_uuid=%s",
+        "[server:job] started job_id=%s queue_wait_seconds=%.3f client_uuid=%s",
         job.id,
-        job.solver,
         queue_wait_seconds,
         job.client_uuid,
     )
@@ -288,17 +286,13 @@ def _run_optimize_job(job_id: str, content: bytes) -> None:
             _update_optimize_job(job_id, score=payload.currentBestScore)
             _publish_job_event(current_job, "progress", serialize_solver_progress(payload, include_export_summary=True))
 
-        should_stop = None
-        if _solver_supports_job_stop(job.solver):
-
-            def should_stop() -> bool:
-                return _is_job_stop_requested(job_id)
+        def should_stop() -> bool:
+            return _is_job_stop_requested(job_id)
 
         df, _solution, score, solver_status, cell_export_info = scheduler.schedule(
             file_content=content,
             prettify=job.prettify,
             timeout=job.timeout,
-            solver=job.solver,
             progress_callback=publish_progress,
             should_stop=should_stop,
         )
@@ -459,7 +453,6 @@ async def create_optimize_job(
     yaml_content: str | None = Form(None, description="YAML content as a string"),
     prettify: bool | None = Form(None, description="Enable prettier output formatting"),
     timeout: int | None = Form(None, description="Max execution time in seconds"),
-    solver: str = Form("ortools/cp-sat", description="Solver selector (e.g., ortools/cp-sat, pulp/cbc, pulp/cuopt)"),
 ):
     content, input_name = await _read_optimization_input(file, yaml_content)
     timeout = _normalize_optimization_timeout(timeout)
@@ -478,7 +471,6 @@ async def create_optimize_job(
     job = _create_optimize_job(
         input_name=input_name,
         client_uuid=client_uuid,
-        solver=solver,
         prettify=prettify,
         timeout=timeout,
     )

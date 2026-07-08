@@ -173,7 +173,7 @@ class TestOptimizeJobs:
             response = client.post(
                 "/optimize",
                 files={"file": ("01_1nurse_1shift_1day.yaml", f, "application/x-yaml")},
-                data={"prettify": "true", "timeout": "60", "solver": "pulp/cbc"},
+                data={"prettify": "true", "timeout": "60"},
             )
 
         assert response.status_code == 202
@@ -181,7 +181,6 @@ class TestOptimizeJobs:
         assert created["inputName"] == "01_1nurse_1shift_1day.yaml"
         assert created["prettify"] is True
         assert created["timeout"] == 60
-        assert created["solver"] == "pulp/cbc"
 
         completed = wait_for_job_status(created["jobId"], "optimal")
         assert completed["xlsxReady"] is True
@@ -251,7 +250,7 @@ class TestOptimizeJobs:
         def fake_schedule(*args, **kwargs):
             kwargs["progress_callback"](
                 SolverProgress(
-                    source="pulp/cbc:solver-log:incumbent",
+                    source="ortools/cp-sat:solution-callback",
                     currentBestScore=7,
                     elapsedSeconds=0.1,
                     cell_export_info={"comments": {(1, 2): ["a", "b"]}},
@@ -274,7 +273,7 @@ class TestOptimizeJobs:
             body = stream_response.read().decode("utf-8")
 
         assert "event: progress" in body
-        assert '"source": "pulp/cbc:solver-log:incumbent"' in body
+        assert '"source": "ortools/cp-sat:solution-callback"' in body
         assert '"currentBestScore": 7' in body
         assert '"commentCount": 2' in body
 
@@ -322,7 +321,7 @@ class TestOptimizeJobs:
             )
             kwargs["progress_callback"](
                 SolverProgress(
-                    source="pulp/cbc:solver-log:incumbent",
+                    source="ortools/cp-sat:solution-callback",
                     currentBestScore=7,
                     elapsedSeconds=0.2,
                 )
@@ -449,25 +448,6 @@ class TestOptimizeJobs:
         assert completed["score"] == 7
         assert completed["xlsxReady"] is True
 
-    def test_optimize_job_control_rejects_solver_without_stop_support(self):
-        job = serve._create_optimize_job(
-            input_name="pulp.yaml",
-            client_uuid="test-client",
-            solver="pulp/cbc",
-            prettify=True,
-            timeout=60,
-        )
-        serve._update_optimize_job(job.id, status=serve.OptimizeJobStatus.RUNNING)
-
-        cancel_response = client.post(f"/optimize/{job.id}/cancel")
-        finish_response = client.post(f"/optimize/{job.id}/finish-now")
-
-        assert cancel_response.status_code == 409
-        assert cancel_response.json()["detail"]["solver"] == "pulp/cbc"
-        assert "does not support" in cancel_response.json()["detail"]["message"]
-        assert finish_response.status_code == 409
-        assert finish_response.json()["detail"]["solver"] == "pulp/cbc"
-
     def test_optimize_job_allows_multiple_sse_connections(self, fake_successful_scheduler):
         response = client.post("/optimize", data={"yaml_content": "apiVersion: alpha\n"})
         job_id = response.json()["jobId"]
@@ -487,7 +467,6 @@ class TestOptimizeJobs:
         job = serve._create_optimize_job(
             input_name="failed.yaml",
             client_uuid="test-client",
-            solver="ortools/cp-sat",
             prettify=True,
             timeout=60,
         )
@@ -509,7 +488,6 @@ class TestOptimizeJobs:
         job = serve._create_optimize_job(
             input_name="atomic.yaml",
             client_uuid="test-client",
-            solver="ortools/cp-sat",
             prettify=True,
             timeout=60,
         )
@@ -568,7 +546,6 @@ class TestOptimizeJobs:
         job = serve._create_optimize_job(
             input_name="expired.yaml",
             client_uuid="test-client",
-            solver="ortools/cp-sat",
             prettify=False,
             timeout=1,
         )
@@ -600,7 +577,6 @@ class TestOptimizeJobs:
             created_at=datetime.now(UTC),
             input_name="existing.yaml",
             client_uuid="test-client",
-            solver="ortools/cp-sat",
             prettify=False,
             timeout=None,
             finished_at=datetime.now(UTC),
@@ -611,7 +587,6 @@ class TestOptimizeJobs:
         job = serve._create_optimize_job(
             input_name="new.yaml",
             client_uuid="test-client",
-            solver="ortools/cp-sat",
             prettify=True,
             timeout=60,
         )
@@ -627,14 +602,12 @@ class TestOptimizeJobs:
         first = serve._create_optimize_job(
             input_name="first.yaml",
             client_uuid="test-client",
-            solver="ortools/cp-sat",
             prettify=True,
             timeout=60,
         )
         second = serve._create_optimize_job(
             input_name="second.yaml",
             client_uuid="test-client",
-            solver="ortools/cp-sat",
             prettify=True,
             timeout=60,
         )
@@ -652,18 +625,16 @@ class TestOptimizeJobs:
             "data": {"status": "queued", "queuePosition": 1},
         }
 
-    def test_optimize_job_cancels_queued_job_immediately_for_any_solver(self, caplog):
+    def test_optimize_job_cancels_queued_job_immediately(self, caplog):
         first = serve._create_optimize_job(
             input_name="first.yaml",
             client_uuid="test-client",
-            solver="ortools/cp-sat",
             prettify=True,
             timeout=60,
         )
         second = serve._create_optimize_job(
             input_name="second.yaml",
             client_uuid="test-client",
-            solver="pulp/cbc",
             prettify=True,
             timeout=60,
         )
@@ -686,7 +657,6 @@ class TestOptimizeJobs:
         job = serve._create_optimize_job(
             input_name="heartbeat.yaml",
             client_uuid="test-client",
-            solver="ortools/cp-sat",
             prettify=True,
             timeout=60,
         )
@@ -704,7 +674,6 @@ class TestOptimizeJobs:
         job = serve._create_optimize_job(
             input_name="finished.yaml",
             client_uuid="test-client",
-            solver="ortools/cp-sat",
             prettify=True,
             timeout=60,
         )
@@ -719,7 +688,6 @@ class TestOptimizeJobs:
         job = serve._create_optimize_job(
             input_name="invalid-update.yaml",
             client_uuid="test-client",
-            solver="ortools/cp-sat",
             prettify=True,
             timeout=60,
         )
@@ -733,7 +701,6 @@ class TestOptimizeJobs:
         job = serve._create_optimize_job(
             input_name="expired-heartbeat.yaml",
             client_uuid="test-client",
-            solver="ortools/cp-sat",
             prettify=True,
             timeout=60,
         )
@@ -759,7 +726,6 @@ class TestOptimizeJobs:
         job = serve._create_optimize_job(
             input_name="alive.yaml",
             client_uuid="test-client",
-            solver="ortools/cp-sat",
             prettify=True,
             timeout=60,
         )
@@ -774,11 +740,10 @@ class TestOptimizeJobs:
         assert job.status == serve.OptimizeJobStatus.QUEUED
         assert job.client_heartbeat_expired is False
 
-    def test_expired_heartbeat_requests_running_job_stop_even_for_non_interruptible_solver(self):
+    def test_expired_heartbeat_requests_running_job_stop(self):
         job = serve._create_optimize_job(
             input_name="running.yaml",
             client_uuid="test-client",
-            solver="pulp/cbc",
             prettify=True,
             timeout=60,
         )
@@ -800,7 +765,6 @@ class TestOptimizeJobs:
             serve._create_optimize_job(
                 input_name=f"pending-{index}.yaml",
                 client_uuid="test-client",
-                solver="ortools/cp-sat",
                 prettify=True,
                 timeout=60,
             )
@@ -827,7 +791,6 @@ class TestOptimizeJobs:
                     created_at=now - timedelta(seconds=serve.OPTIMIZE_MAX_RETAINED_JOBS - index),
                     input_name=f"retained-{index}.yaml",
                     client_uuid="test-client",
-                    solver="ortools/cp-sat",
                     prettify=True,
                     timeout=60,
                     finished_at=now - timedelta(seconds=serve.OPTIMIZE_MAX_RETAINED_JOBS - index),
