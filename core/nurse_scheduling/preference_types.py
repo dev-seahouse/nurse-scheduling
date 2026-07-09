@@ -29,6 +29,21 @@ from . import constants
 # Leave most parsing to the caller, keep the function here simple.
 
 
+def _day_state_expr(ctx: Context, d: int, s: int, p: int):
+    """Return the boolean expression for a day-state or worked-shift index `s`.
+
+    Worked shift types map to ``shifts[(d, s, p)]``, the reserved ``OFF``
+    sentinel maps to ``offs[(d, p)]``, and the reserved ``LEAVE`` sentinel maps
+    to ``leaves[(d, p)]``. This keeps every preference handler agnostic to how
+    the OFF/LEAVE day-states are stored.
+    """
+    if s == constants.OFF_sid:
+        return ctx.offs[(d, p)]
+    if s == constants.LEAVE_sid:
+        return ctx.leaves[(d, p)]
+    return ctx.shifts[(d, s, p)]
+
+
 def _parse_shift_type_requirement_groups(shift_type, map_sid_s):
     # Normalize shiftType to a list of requirement groups. Each inner list is
     # one staffing equation. This follows shift affinity's top-level list
@@ -126,6 +141,11 @@ def shift_type_requirements(ctx: Context, preference: models.ShiftTypeRequiremen
             "To specify a zero-shift day, define an ALL shift type for that date "
             "with requiredNumPeople set to 0."
         )
+    if any(constants.LEAVE_sid in ss for ss in shift_type_groups):
+        raise ValueError(
+            "'LEAVE' is not allowed in shift type requirement preferences. "
+            "Paid leave is not a worked shift and provides no coverage."
+        )
     coefficients = _parse_shift_type_requirement_coefficients(ctx, preference, shift_type_groups)
     for d in ds:
         for group_idx, ss in enumerate(shift_type_groups):
@@ -216,10 +236,13 @@ def shift_request(ctx: Context, preference: models.ShiftRequestPreference, prefe
         for p in ps:
             weight = preference.weight
             if utils.is_ss_equivalent_to_all(ss, ctx.n_shift_types):
-                # Add the objective
-                utils.add_objective(ctx, weight, ctx.solver.negate(ctx.offs[(d, p)]))
+                # "Work any shift": a worked day, which excludes both the OFF
+                # and LEAVE day-states. sum_s shifts is 0/1 (exactly one
+                # day-state per day), so it is the worked-day indicator.
+                worked_sum = sum(ctx.shifts[(d, s, p)] for s in range(ctx.n_shift_types))
+                utils.add_objective(ctx, weight, worked_sum)
                 ctx.reports.append(
-                    Report(f"shift_request_pref_{preference_idx}_d_{d}_p_{p}_offs", ctx.offs[(d, p)], lambda x: x == 0)
+                    Report(f"shift_request_pref_{preference_idx}_d_{d}_p_{p}_worked", worked_sum, lambda x: x == 1)
                 )
             else:
                 for s in ss:
@@ -230,6 +253,19 @@ def shift_request(ctx: Context, preference: models.ShiftRequestPreference, prefe
                             Report(
                                 f"shift_request_pref_{preference_idx}_d_{d}_p_{p}_offs",
                                 ctx.offs[(d, p)],
+                                lambda x: x == 1,
+                            )
+                        )
+                    elif s == constants.LEAVE_sid:
+                        # Paid leave is an input-only day-state: any LEAVE
+                        # request is a hard pin (honored regardless of weight),
+                        # recorded so the scheduler forces leave to 0 elsewhere.
+                        ctx.solver.add_constraint(ctx.leaves[(d, p)] == 1)
+                        ctx.pinned_leaves.add((d, p))
+                        ctx.reports.append(
+                            Report(
+                                f"shift_request_pref_{preference_idx}_d_{d}_p_{p}_leaves",
+                                ctx.leaves[(d, p)],
                                 lambda x: x == 1,
                             )
                         )
@@ -280,8 +316,12 @@ def shift_type_successions(ctx: Context, preference: models.ShiftTypeSuccessions
 
     def _pattern_element_match_expr(d, p, pattern_element):
         if pattern_element == constants.ALL:
-            return ctx.solver.negate(ctx.offs[(d, p)]), True
-        matches = [ctx.shifts[(d, s, p)] if s != constants.OFF_sid else ctx.offs[(d, p)] for s in pattern_element]
+            # "Any worked shift": excludes both OFF and LEAVE. sum_s shifts is
+            # 0/1 under the day-state constraint, so a leave day does not match
+            # an ALL pattern element. (Not a single literal, hence is_literal
+            # False, which routes through the general is_match constraint path.)
+            return sum(ctx.shifts[(d, s, p)] for s in range(ctx.n_shift_types)), False
+        matches = [_day_state_expr(ctx, d, s, p) for s in pattern_element]
         if len(matches) == 1:
             return matches[0], True
         return sum(matches), False
@@ -428,7 +468,7 @@ def shift_count(ctx: Context, preference: models.ShiftCountPreference, preferenc
             unique_var_prefix = f"pref_{preference_idx}_p_{p}"
             # Calculate actual number of shifts for this person
             x = sum(
-                coefficients[s] * (ctx.shifts[(d, s, p)] if s != constants.OFF_sid else ctx.offs[(d, p)])
+                coefficients[s] * _day_state_expr(ctx, d, s, p)
                 for d in c_ds
                 for s in c_ss
             )
@@ -581,7 +621,7 @@ def shift_affinity(ctx: Context, preference: models.ShiftAffinityPreference, pre
                     some_p2_matched_var_name = f"{unique_var_prefix}_some_p2_matched"
                     is_match_var_name = f"{unique_var_prefix}_is_match"
                     sum1 = sum(
-                        ctx.shifts[(d, s, p)] if s != constants.OFF_sid else ctx.offs[(d, p)] for p in p1s for s in ss
+                        _day_state_expr(ctx, d, s, p) for p in p1s for s in ss
                     )
                     ctx.model_vars[some_p1_matched_var_name] = some_p1_matched = (
                         ctx.solver.create_bool_var_with_constraint(
@@ -593,7 +633,7 @@ def shift_affinity(ctx: Context, preference: models.ShiftAffinityPreference, pre
                         )
                     )
                     sum2 = sum(
-                        ctx.shifts[(d, s, p)] if s != constants.OFF_sid else ctx.offs[(d, p)] for p in p2s for s in ss
+                        _day_state_expr(ctx, d, s, p) for p in p2s for s in ss
                     )
                     ctx.model_vars[some_p2_matched_var_name] = some_p2_matched = (
                         ctx.solver.create_bool_var_with_constraint(
@@ -673,6 +713,11 @@ def shift_type_covering(ctx: Context, preference: models.ShiftTypeCoveringPrefer
         raise ValueError("Preceptees list must contain at least one valid person or group.")
     if not shift_type_groups:
         raise ValueError("Shift types list must contain at least one valid shift type.")
+    if any(constants.OFF_sid in ss or constants.LEAVE_sid in ss for ss in shift_type_groups):
+        raise ValueError(
+            "'OFF' and 'LEAVE' are not allowed in shift type covering preferences; "
+            "covering applies to worked shifts only."
+        )
 
     for d in ds:
         for ss in shift_type_groups:

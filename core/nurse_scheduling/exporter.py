@@ -190,7 +190,9 @@ def _build_custom_export_style_info(
                     )
             else:
                 actual_target_shift_types = {
-                    s for s in target_shift_types if s == constants.OFF_sid or 0 <= s < ctx.n_shift_types
+                    s
+                    for s in target_shift_types
+                    if s in (constants.OFF_sid, constants.LEAVE_sid) or 0 <= s < ctx.n_shift_types
                 }
                 for d in target_dates:
                     for p in target_people:
@@ -201,6 +203,8 @@ def _build_custom_export_style_info(
                         ]
                         if ctx.solver.get_value(ctx.offs[(d, p)]) == 1:
                             assigned_shift_types.append(constants.OFF_sid)
+                        if ctx.solver.get_value(ctx.leaves[(d, p)]) == 1:
+                            assigned_shift_types.append(constants.LEAVE_sid)
                         if not any(s in actual_target_shift_types for s in assigned_shift_types):
                             continue
                         row_idx = n_leading_rows + p
@@ -262,6 +266,9 @@ def _count_extra_column_for_person(ctx: Context, p: int, count_dates, count_shif
         if constants.OFF_sid in count_shift_types and ctx.solver.get_value(ctx.offs[(d, p)]) == 1:
             count += coefficients[constants.OFF_sid]
             continue
+        if constants.LEAVE_sid in count_shift_types and ctx.solver.get_value(ctx.leaves[(d, p)]) == 1:
+            count += coefficients[constants.LEAVE_sid]
+            continue
         count += sum(
             coefficients[s]
             for s in count_shift_types
@@ -274,6 +281,9 @@ def _count_extra_row_for_date(ctx: Context, d: int, count_people, count_shift_ty
     count = 0
     for p in count_people:
         if constants.OFF_sid in count_shift_types and ctx.solver.get_value(ctx.offs[(d, p)]) == 1:
+            count += 1
+            continue
+        if constants.LEAVE_sid in count_shift_types and ctx.solver.get_value(ctx.leaves[(d, p)]) == 1:
             count += 1
             continue
         if any(
@@ -424,10 +434,14 @@ def _iter_expanded_shift_request_targets(ctx: Context, pref):
 
 def _is_shift_request_satisfied(ctx: Context, pref, *, d: int, p: int, shift_types: list[int]) -> bool:
     """Return whether a cell-level shift request is satisfied by the solved schedule."""
-    requested_state_is_assigned = any(
-        ctx.solver.get_value(ctx.offs[(d, p)] if s == constants.OFF_sid else ctx.shifts[(d, s, p)]) == 1
-        for s in shift_types
-    )
+    def _state_var(s):
+        if s == constants.OFF_sid:
+            return ctx.offs[(d, p)]
+        if s == constants.LEAVE_sid:
+            return ctx.leaves[(d, p)]
+        return ctx.shifts[(d, s, p)]
+
+    requested_state_is_assigned = any(ctx.solver.get_value(_state_var(s)) == 1 for s in shift_types)
     return requested_state_is_assigned if pref.weight > 0 else not requested_state_is_assigned
 
 
@@ -587,6 +601,10 @@ def get_people_versus_date_dataframe(ctx: Context, prettify: bool = False):
                 if cell_value != "":
                     cell_value += ", "
                 cell_value += ctx.shiftTypes.items[s].id
+        # Render a paid-leave day distinctly (never blank). OFF still renders
+        # blank; leave is a worked-day peer that must be visible on the roster.
+        if solver.get_value(ctx.leaves[(d, p)]) == 1:
+            cell_value = "Leave"
         if prettify and (d, p) in cell_annotations:
             for append_text in cell_annotations[(d, p)]["append_text"]:
                 cell_value += append_text
@@ -603,14 +621,18 @@ def get_people_versus_date_dataframe(ctx: Context, prettify: bool = False):
     df.iloc[n_leading_rows + len(ctx.people.items) + 1, 0] = "Status"
     df.iloc[n_leading_rows + len(ctx.people.items) + 1, n_leading_cols + n_history_cols] = ctx.solver_status
 
-    # Sanity check with offs variables
+    # Sanity check the three day-states: OFF renders blank, LEAVE renders
+    # "Leave", and a worked day renders a non-empty shift id.
     if not prettify:
         for d, p in ctx.offs.keys():
             col_idx = n_leading_cols + n_history_cols + d
+            cell = df.iloc[n_leading_rows + p, col_idx]
             if solver.get_value(ctx.offs[(d, p)]) == 1:
-                assert df.iloc[n_leading_rows + p, col_idx] == ""
+                assert cell == ""
+            elif solver.get_value(ctx.leaves[(d, p)]) == 1:
+                assert cell == "Leave"
             else:
-                assert df.iloc[n_leading_rows + p, col_idx] != ""
+                assert cell != ""
 
     if prettify:
         extra_col_start = n_leading_cols + n_history_cols + len(ctx.dates.items) + 1

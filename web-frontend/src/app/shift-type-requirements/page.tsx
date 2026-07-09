@@ -33,7 +33,7 @@ import ToggleButton from '@/components/ToggleButton';
 import { isValidWeightValue, isValidNumberValue, getWeightWithPositivePrefix } from '@/utils/numberParsing';
 import WeightInput from '@/components/WeightInput';
 import { saveScrollPosition, restoreScrollPosition } from '@/utils/scrolling';
-import { ALL, OFF } from '@/utils/keywords';
+import { ALL, OFF, LEAVE } from '@/utils/keywords';
 import { useTabSwitchWarning } from '@/utils/unsavedEditingState';
 import { isImeCompositionKeyEvent } from '@/utils/keyboardEvents';
 import {
@@ -124,7 +124,7 @@ function buildRequirementCoverageWarning(
   // the tuple avoids collisions between IDs that contain separator characters.
   const coverage = new Map<string, number>();
   const duplicateCells: string[] = [];
-  const staffedShiftTypeItems = shiftTypeItems.filter(shiftType => shiftType.id !== OFF);
+  const staffedShiftTypeItems = shiftTypeItems.filter(shiftType => shiftType.id !== OFF && shiftType.id !== LEAVE);
   const mapDateIdToExpandedDateIds = new Map(
     [
       ...dateItems.map(date => [date.id, [date.id]] as const),
@@ -466,13 +466,13 @@ export default function ShiftTypeRequirementsPage() {
 
   const shiftTypeRequirementOptions = [
     ...shiftTypeData.items
-      .filter(shiftType => shiftType.id !== OFF)
+      .filter(shiftType => shiftType.id !== OFF && shiftType.id !== LEAVE)
       .map(shiftType => ({
         id: shiftType.id,
         description: shiftType.description
       })),
     ...shiftTypeData.groups
-      .filter(group => !group.members.includes(OFF))
+      .filter(group => !group.members.includes(OFF) && !group.members.includes(LEAVE))
       .map(group => ({
         id: group.id,
         description: group.description

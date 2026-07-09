@@ -25,7 +25,7 @@ from collections.abc import Callable
 from datetime import timedelta
 
 from . import exporter, preference_types
-from .constants import ALL, OFF, OFF_sid, MAP_DATE_KEYWORD_TO_FILTER, MAP_WEEKDAY_TO_STR
+from .constants import ALL, OFF, OFF_sid, LEAVE, LEAVE_sid, MAP_DATE_KEYWORD_TO_FILTER, MAP_WEEKDAY_TO_STR
 from .context import Context
 from .utils import parse_dates
 from .loader import load_data
@@ -85,9 +85,12 @@ def schedule(
     # Map shift type ID to shift type index
     for s in range(ctx.n_shift_types):
         ctx.map_sid_s[ctx.shiftTypes.items[s].id] = [s]
-    # Add shift type ALL and OFF keywords
+    # Add shift type ALL, OFF, and LEAVE keywords.
+    # ALL intentionally expands to worked shift types only (it excludes both
+    # the OFF and LEAVE day-states).
     ctx.map_sid_s[ALL] = list(range(ctx.n_shift_types))
     ctx.map_sid_s[OFF] = [OFF_sid]
+    ctx.map_sid_s[LEAVE] = [LEAVE_sid]
     # Map shift type group ID to list of shift type indices
     for g in range(len(ctx.shiftTypes.groups)):
         group = ctx.shiftTypes.groups[g]
@@ -180,21 +183,22 @@ def schedule(
         )
 
     _emit_phase_progress(progress_callback, "creating_off_variables", "Creating off variables", progress_started_at)
-    logging.info("Creating off variables...")
+    logging.info("Creating off and leave variables...")
     step_started_at, start_counts = start_model_build_step(model_build_stats_callback, ctx)
     for d in range(ctx.n_days):
         for p in range(ctx.n_people):
             dp_shifts_sum = sum(ctx.shifts[(d, s, p)] for s in range(ctx.n_shift_types))
-            var_name = f"off_d{d}_p{p}"
-            ctx.model_vars[var_name] = ctx.offs[(d, p)] = ctx.solver.new_bool_var(var_name)
-            # This defines OFF and enforces at most one shift per person per day.
-            # Previously, OFF was defined separately as:
-            #   ctx.solver.create_bool_var_with_constraint(
-            #       var_name, dp_shifts_sum, Operator.EQ, 0, (0, ctx.n_shift_types)
-            #   )
-            # and the at-most-one preference added:
-            #   dp_shifts_sum <= 1
-            ctx.solver.add_constraint(ctx.offs[(d, p)] + dp_shifts_sum == 1)
+            off_var_name = f"off_d{d}_p{p}"
+            ctx.model_vars[off_var_name] = ctx.offs[(d, p)] = ctx.solver.new_bool_var(off_var_name)
+            leave_var_name = f"leave_d{d}_p{p}"
+            ctx.model_vars[leave_var_name] = ctx.leaves[(d, p)] = ctx.solver.new_bool_var(leave_var_name)
+            # This defines OFF and LEAVE and enforces exactly one day-state per
+            # person per day: a worked shift, an OFF (rest) day, or a LEAVE
+            # (paid leave) day. Because leave is not one of the worked shifts,
+            # it contributes nothing to any coverage/staffing constraint.
+            # Previously (two-state), OFF was defined as:
+            #   ctx.solver.add_constraint(ctx.offs[(d, p)] + dp_shifts_sum == 1)
+            ctx.solver.add_constraint(ctx.offs[(d, p)] + dp_shifts_sum + ctx.leaves[(d, p)] == 1)
     emit_model_build_stats(
         model_build_stats_callback,
         ctx,
@@ -268,6 +272,16 @@ def schedule(
             preference_index=i,
             preference_type=preference.type,
         )
+
+    # Leave is input-only: it is 1 exactly where a LEAVE shift request pinned
+    # it (recorded in ctx.pinned_leaves while processing shift requests), and 0
+    # everywhere else. This makes leave a fixed input the solver cannot invent
+    # to game hour totals, without needing a scenario-level "no unplanned
+    # leave" guard.
+    for d in range(ctx.n_days):
+        for p in range(ctx.n_people):
+            if (d, p) not in ctx.pinned_leaves:
+                ctx.solver.add_constraint(ctx.leaves[(d, p)] == 0)
 
     # Define objective (i.e., soft constraints)
     ctx.solver.set_objective(ctx.objective, maximize=True)

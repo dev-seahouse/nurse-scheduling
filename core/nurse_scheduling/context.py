@@ -53,6 +53,14 @@ class Context(NurseSchedulingData):
     offs: dict[tuple[int, int], Any] = Field(default_factory=dict)
     """A set of indicator variables (offs[(d, p)]) that are 1 if and
     only if a person (p) is off on day (d)."""
+    leaves: dict[tuple[int, int], Any] = Field(default_factory=dict)
+    """A set of indicator variables (leaves[(d, p)]) that are 1 if and
+    only if a person (p) is on paid leave on day (d). Leave is an input-only
+    day-state: it is pinned by leave shift requests and forced to 0 elsewhere,
+    so the solver never invents leave."""
+    pinned_leaves: set[tuple[int, int]] = Field(default_factory=set)
+    """The (d, p) pairs pinned as leave by a LEAVE shift request. Used to
+    force leaves[(d, p)] == 0 for every other (d, p)."""
 
     # Results and reporting
     reports: list[Report] = Field(default_factory=list)

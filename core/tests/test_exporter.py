@@ -959,6 +959,7 @@ def test_dataframe_generation_supports_multiple_assigned_shift_types():
         map_dp_s={(0, 0): {0, 1}},
         shifts={(0, 0, 0): "v_d", (0, 1, 0): "v_e"},
         offs={(0, 0): "v_off"},
+        leaves={(0, 0): "v_leave"},
         preferences=[],
         map_sid_s={},
         map_pid_p={},

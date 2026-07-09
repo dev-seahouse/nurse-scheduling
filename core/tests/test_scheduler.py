@@ -484,7 +484,9 @@ def test_scheduler_model_build_stats_callback_reports_build_steps(monkeypatch):
         "shift type requirement",
     ]
     assert events[0].variablesAdded == 1
-    assert events[1].variablesAdded == 1
+    # The off/leave step now creates two vars per (day, person): the OFF and
+    # the LEAVE day-state indicators.
+    assert events[1].variablesAdded == 2
     assert events[1].constraintsAdded == 1
     assert events[3].constraintsAdded == 0
     assert events[-1].totalVariables >= events[-1].variablesAdded

@@ -17,14 +17,18 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+import { useState } from 'react';
 import NumberInput from '@/components/NumberInput';
 import { OrderedEntry, sortIdsByEntryOrder } from '@/utils/entityOrdering';
 import { Group, Item } from '@/types/scheduling';
 import {
   DraftShiftCountTypeCoefficient,
+  autoFillCoefficientsFromDurations,
   getCoefficientForShiftType,
   getCoefficientShiftTypeIds,
   updateCoefficientPair,
+  HALF_HOUR_UNIT_MINUTES,
+  HOUR_UNIT_MINUTES,
 } from '@/utils/countShiftTypeCoefficients';
 
 interface CountShiftTypeCoefficientFieldsProps {
@@ -34,6 +38,9 @@ interface CountShiftTypeCoefficientFieldsProps {
   shiftTypeData: { items: Item[]; groups: Group[] };
   errorsById?: Record<string, string>;
   label?: string;
+  // Show the "auto-fill from durations" control + unit toggle. Not offered for
+  // Shift Type Requirements (coefficients there are staffing weights, not hours).
+  enableDurationAutofill?: boolean;
   onChange: (coefficients: DraftShiftCountTypeCoefficient[], changedShiftTypeId: string) => void;
 }
 
@@ -44,17 +51,60 @@ export function CountShiftTypeCoefficientFields({
   shiftTypeData,
   errorsById = {},
   label = 'Count Shift Type',
+  enableDurationAutofill = false,
   onChange,
 }: CountShiftTypeCoefficientFieldsProps) {
+  const [unitMinutes, setUnitMinutes] = useState<number>(HALF_HOUR_UNIT_MINUTES);
   const singularLabel = label.toLowerCase();
   const emptyHint = `Coefficients are not needed when no ${singularLabel} is selected.`;
   const coefficientShiftTypeIds = getCoefficientShiftTypeIds(selectedShiftTypeIds, shiftTypeData);
+
+  const unitOptions = [
+    { minutes: HALF_HOUR_UNIT_MINUTES, label: 'half-hour' },
+    { minutes: HOUR_UNIT_MINUTES, label: 'hour' },
+  ];
 
   return (
     <div>
       <label className="block text-sm font-medium text-gray-700 mb-2">
         {label} Coefficients
       </label>
+
+      {enableDurationAutofill && coefficientShiftTypeIds.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <button
+            type="button"
+            onClick={() =>
+              onChange(
+                autoFillCoefficientsFromDurations(coefficientShiftTypeIds, coefficients, shiftTypeData, unitMinutes),
+                ''
+              )
+            }
+            className="px-3 py-1.5 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors"
+          >
+            Auto-fill from durations
+          </button>
+          <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden" role="group" aria-label="Coefficient unit">
+            {unitOptions.map(option => (
+              <button
+                key={option.minutes}
+                type="button"
+                onClick={() => setUnitMinutes(option.minutes)}
+                className={`px-3 py-1.5 text-sm transition-colors ${
+                  unitMinutes === option.minutes
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white text-gray-700 hover:bg-gray-50'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-gray-500 italic">
+            Fills coefficients from each shift&apos;s duration (LEAVE counts 8h); the target stays what you type.
+          </span>
+        </div>
+      )}
 
       <div className="flex flex-wrap items-end">
         {coefficientShiftTypeIds.length < 1 ? (

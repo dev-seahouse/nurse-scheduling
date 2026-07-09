@@ -22,6 +22,8 @@ from enum import Enum
 ALL = "ALL"  # For dates, shift types, and people
 OFF = "OFF"  # For shift types
 OFF_sid = -1  # For shift types
+LEAVE = "LEAVE"  # For shift types (first-class paid-leave day-state)
+LEAVE_sid = -2  # For shift types
 
 MAP_WEEKDAY_TO_STR = [
     "MONDAY",

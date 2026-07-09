@@ -64,11 +64,11 @@ interface ItemGroupEditorPageProps {
   children?: React.ReactNode;
   extraButtons?: React.ReactNode;
   itemTableHeaderAction?: React.ReactNode;
-  addItem: (dataType: DataType, data: ItemGroupEditorPageData, id: string, groupIds: string[], description?: string) => void;
+  addItem: (dataType: DataType, data: ItemGroupEditorPageData, id: string, groupIds: string[], description?: string, durationMinutes?: number) => void;
   addGroup: (dataType: DataType, data: ItemGroupEditorPageData, id: string, memberIds: string[], description?: string) => void;
   duplicateItem: (dataType: DataType, data: ItemGroupEditorPageData, id: string) => void;
   duplicateGroup: (dataType: DataType, data: ItemGroupEditorPageData, id: string) => void;
-  updateItem: (dataType: DataType, data: ItemGroupEditorPageData, oldId: string, newId: string, groupIds?: string[], description?: string) => void;
+  updateItem: (dataType: DataType, data: ItemGroupEditorPageData, oldId: string, newId: string, groupIds?: string[], description?: string, durationMinutes?: number) => void;
   updateGroup: (dataType: DataType, data: ItemGroupEditorPageData, oldId: string, newId: string, members?: string[], description?: string) => void;
   deleteItem: (dataType: DataType, data: ItemGroupEditorPageData, id: string) => void;
   deleteGroup: (dataType: DataType, data: ItemGroupEditorPageData, id: string) => void;
@@ -120,6 +120,7 @@ export default function ItemGroupEditorPage({
     members: string[];
     editingId?: string;
     isItem: boolean;  // Whether the draft is for an item or a group
+    durationMinutes?: string;  // Shift-type items only (authoring-only duration)
   }>({
     id: '',
     description: '',
@@ -159,6 +160,14 @@ export default function ItemGroupEditorPage({
       return;
     }
 
+    // Parse the authoring-only shift-type duration (blank clears it).
+    const trimmedDuration = (draft.durationMinutes ?? '').trim();
+    const parsedDuration = trimmedDuration === '' ? undefined : Number.parseInt(trimmedDuration, 10);
+    const durationMinutes =
+      dataType === DataType.SHIFT_TYPES && parsedDuration !== undefined && !Number.isNaN(parsedDuration) && parsedDuration > 0
+        ? parsedDuration
+        : undefined;
+
     const wasEditing = !!draft.editingId;
     if (draft.isItem) {
       if (draft.editingId) {
@@ -168,7 +177,8 @@ export default function ItemGroupEditorPage({
           draft.editingId,
           trimmedId,
           draft.groups,
-          trimmedDescription
+          trimmedDescription,
+          durationMinutes
         );
       } else {
         addItem(
@@ -176,7 +186,8 @@ export default function ItemGroupEditorPage({
           data,
           trimmedId,
           draft.groups,
-          trimmedDescription
+          trimmedDescription,
+          durationMinutes
         );
       }
     } else {
@@ -237,7 +248,8 @@ export default function ItemGroupEditorPage({
           groups: itemGroups,
           members: [],
           editingId: id,
-          isItem: true
+          isItem: true,
+          durationMinutes: item.durationMinutes != null ? String(item.durationMinutes) : ''
         });
       } else {
         console.error(`${itemLabel} with ID ${id} not found during edit. ${ERROR_SHOULD_NOT_HAPPEN}`);
@@ -385,6 +397,10 @@ export default function ItemGroupEditorPage({
 
   const handleDraftDescriptionChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setDraft(prev => ({ ...prev, description: e.target.value }));
+  };
+
+  const handleDraftDurationChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setDraft(prev => ({ ...prev, durationMinutes: e.target.value }));
   };
 
   const handleMemberToggle = (id: string) => {
@@ -620,6 +636,9 @@ export default function ItemGroupEditorPage({
           onMemberToggle={handleMemberToggle}
           onSave={handleSave}
           onCancel={handleCancel}
+          showDurationField={dataType === DataType.SHIFT_TYPES}
+          durationValue={draft.durationMinutes ?? ''}
+          onDurationChange={handleDraftDurationChange}
         />
       )}
 

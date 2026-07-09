@@ -50,6 +50,10 @@ interface AddEditItemGroupFormProps<T extends Item, G extends Group> {
   onMemberToggle: (id: string) => void;
   onSave: () => void;
   onCancel: () => void;
+  // Shift-type items only: optional authoring-only duration (minutes).
+  showDurationField?: boolean;
+  durationValue?: string;
+  onDurationChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }
 
 export function AddEditItemGroupForm<T extends Item, G extends Group>({
@@ -67,8 +71,31 @@ export function AddEditItemGroupForm<T extends Item, G extends Group>({
   onMemberToggle,
   onSave,
   onCancel,
+  showDurationField = false,
+  durationValue = '',
+  onDurationChange,
 }: AddEditItemGroupFormProps<T, G>) {
   const isItem = draft.isItem;
+  const durationField = showDurationField && isItem ? (
+    <div className="space-y-2">
+      <label htmlFor="shift-type-duration" className="block text-sm font-medium text-gray-700">
+        Duration (minutes)
+      </label>
+      <input
+        id="shift-type-duration"
+        type="number"
+        min="1"
+        step="1"
+        value={durationValue}
+        onChange={onDurationChange}
+        placeholder="e.g. 480 for an 8h shift"
+        className="block w-full px-3 py-2 text-sm text-gray-900 bg-white border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:border-blue-500 focus:ring-blue-200 hover:border-gray-400"
+      />
+      <p className="text-xs text-gray-500 italic">
+        Optional. Feeds &quot;auto-fill from durations&quot; in Shift Counts; not sent to the solver.
+      </p>
+    </div>
+  ) : null;
   const title = `${mode === Mode.ADDING ? 'Add New' : 'Edit'} ${isItem ? itemLabel : "Group"}`;
   const placeholder = `Enter ${isItem ? itemLabel.toLowerCase() : "group"} ID`;
   const filteredItems = filterItemGroups(items) as T[];
@@ -124,7 +151,12 @@ export function AddEditItemGroupForm<T extends Item, G extends Group>({
           onCancel={onCancel}
           actionText={mode === Mode.ADDING ? 'Add' : 'Update'}
         >
-          {!draft.isItem ? memberSelector : groupSelector}
+          {!draft.isItem ? memberSelector : (
+            <>
+              {durationField}
+              {groupSelector}
+            </>
+          )}
         </FormInput>
       </div>
     </div>

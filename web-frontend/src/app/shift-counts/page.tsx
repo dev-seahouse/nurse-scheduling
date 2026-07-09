@@ -533,6 +533,7 @@ export default function ShiftCountsPage() {
                   shiftTypeEntries={shiftTypeEntries}
                   shiftTypeData={shiftTypeData}
                   errorsById={errors.count_shift_type_coefficients_by_id}
+                  enableDurationAutofill
                   onChange={(coefficients, changedShiftTypeId) => {
                     clearCoefficientError(changedShiftTypeId);
                     setFormData(prev => ({

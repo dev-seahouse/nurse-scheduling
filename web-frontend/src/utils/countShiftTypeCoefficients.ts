@@ -18,8 +18,14 @@
  */
 
 import { Group, Item, ShiftCountTypeCoefficient } from '@/types/scheduling';
+import { LEAVE, LEAVE_CREDIT_MINUTES } from '@/utils/keywords';
 
 export type DraftShiftCountTypeCoefficient = [string, number | string];
+
+// Coefficient auto-fill unit: how many minutes one coefficient unit represents.
+// Half-hour units keep 12.5h shifts integer (25); hour units are coarser.
+export const HALF_HOUR_UNIT_MINUTES = 30;
+export const HOUR_UNIT_MINUTES = 60;
 
 export interface ShiftCountTypeCoefficientValidation {
   coefficients: ShiftCountTypeCoefficient[];
@@ -71,6 +77,24 @@ export function syncCoefficientPairs(
   }
 
   return coefficientShiftTypeIds.map(id => [id, getCoefficientForShiftType(coefficients, id)]);
+}
+
+export function autoFillCoefficientsFromDurations(
+  coefficientShiftTypeIds: string[],
+  currentCoefficients: DraftShiftCountTypeCoefficient[],
+  shiftTypeData: { items: Item[]; groups: Group[] },
+  unitMinutes: number
+): DraftShiftCountTypeCoefficient[] {
+  const durationById = new Map(shiftTypeData.items.map(item => [item.id, item.durationMinutes]));
+  return coefficientShiftTypeIds.map((id): DraftShiftCountTypeCoefficient => {
+    // LEAVE carries a fixed credit; worked shift types use their durationMinutes.
+    // Group ids and shift types without a duration keep their current value.
+    const durationMinutes = id === LEAVE ? LEAVE_CREDIT_MINUTES : durationById.get(id);
+    if (typeof durationMinutes === 'number' && unitMinutes > 0) {
+      return [id, Math.max(1, Math.round(durationMinutes / unitMinutes))];
+    }
+    return [id, getCoefficientForShiftType(currentCoefficients, id)];
+  });
 }
 
 export function updateCoefficientPair(

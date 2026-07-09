@@ -24,7 +24,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, ConfigDict, model_validator, field_validator
 from typing_extensions import Annotated, Self
-from .constants import ALL, OFF, MAP_WEEKDAY_TO_STR, MAP_DATE_KEYWORD_TO_FILTER
+from .constants import ALL, OFF, LEAVE, MAP_WEEKDAY_TO_STR, MAP_DATE_KEYWORD_TO_FILTER
 
 AT_MOST_ONE_SHIFT_PER_DAY = "at most one shift per day"
 SHIFT_TYPE_REQUIREMENT = "shift type requirement"
@@ -68,6 +68,9 @@ class ShiftType(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: int | str
     description: str | None = None
+    # Authoring-only shift duration (Option B). Feeds the frontend
+    # "auto-fill coefficients from durations" helper; ignored by the solver.
+    durationMinutes: int | None = None
 
 
 class ShiftTypeGroup(BaseModel):
@@ -362,7 +365,7 @@ class NurseSchedulingData(BaseModel):
             raise ValueError("enddate must be after or equal to startdate")
 
         # Validate duplicate IDs and reserved IDs
-        shift_type_reserved_ids = {k.upper() for k in {ALL, OFF}}
+        shift_type_reserved_ids = {k.upper() for k in {ALL, OFF, LEAVE}}
         shift_type_ids = set()
         shift_type_group_ids = set()
         for shift_type in self.shiftTypes.items:
@@ -395,7 +398,7 @@ class NurseSchedulingData(BaseModel):
                     raise ValueError(f"History must not include 'ALL', but got {history_shift_type_id!r}")
                 if history_shift_type_id in shift_type_group_ids:
                     raise ValueError(f"History must not include group ID, but got {history_shift_type_id!r}")
-                if history_shift_type_id != OFF and history_shift_type_id not in shift_type_ids:
+                if history_shift_type_id not in (OFF, LEAVE) and history_shift_type_id not in shift_type_ids:
                     raise ValueError(f"Unknown shift type ID in history: {history_shift_type_id!r}")
             person_and_group_ids.add(person.id)
         for group in self.people.groups:

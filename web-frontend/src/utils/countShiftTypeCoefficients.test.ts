@@ -18,11 +18,15 @@
  */
 
 import {
+  autoFillCoefficientsFromDurations,
   getCoefficientShiftTypeIds,
   syncCoefficientPairs,
   updateCoefficientPair,
   validateCoefficientPairs,
+  HALF_HOUR_UNIT_MINUTES,
+  HOUR_UNIT_MINUTES,
 } from '@/utils/countShiftTypeCoefficients';
+import { LEAVE } from '@/utils/keywords';
 
 const shiftTypeData = {
   items: [
@@ -90,6 +94,43 @@ describe('countShiftTypeCoefficients', () => {
       coefficients: [['D', 1], ['WORK', 2]],
       errorsById: {},
       overlapError: 'Shift type coefficients overlap: D, WORK include D',
+    });
+  });
+
+  describe('autoFillCoefficientsFromDurations', () => {
+    const durationShiftTypeData = {
+      items: [
+        { id: 'D', description: 'Day', durationMinutes: 750 },  // 12.5h
+        { id: 'AM', description: 'Morning', durationMinutes: 480 },  // 8h
+        { id: LEAVE, description: 'Paid leave' },
+      ],
+      groups: [],
+    };
+
+    it('fills coefficients from durations in half-hour units, crediting LEAVE 8h', () => {
+      const result = autoFillCoefficientsFromDurations(
+        ['D', 'AM', LEAVE],
+        [],
+        durationShiftTypeData,
+        HALF_HOUR_UNIT_MINUTES
+      );
+      expect(result).toEqual([['D', 25], ['AM', 16], [LEAVE, 16]]);
+    });
+
+    it('fills coefficients in hour units', () => {
+      const result = autoFillCoefficientsFromDurations(
+        ['AM', LEAVE],
+        [],
+        durationShiftTypeData,
+        HOUR_UNIT_MINUTES
+      );
+      expect(result).toEqual([['AM', 8], [LEAVE, 8]]);
+    });
+
+    it('preserves the current value for shift types without a duration', () => {
+      const noDurationData = { items: [{ id: 'X', description: 'No duration' }], groups: [] };
+      const result = autoFillCoefficientsFromDurations(['X'], [['X', 4]], noDurationData, HALF_HOUR_UNIT_MINUTES);
+      expect(result).toEqual([['X', 4]]);
     });
   });
 });

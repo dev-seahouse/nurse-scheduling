@@ -946,6 +946,7 @@ export default function ExportFormattingPage() {
         shiftTypeEntries={[...shiftTypeData.items, ...shiftTypeData.groups]}
         shiftTypeData={shiftTypeData}
         errorsById={errors.countShiftTypeCoefficientsById}
+        enableDurationAutofill
         onChange={(coefficients, changedShiftTypeId) => {
           clearCoefficientError(changedShiftTypeId);
           setCoefficientPairs(coefficients);
