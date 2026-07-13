@@ -672,7 +672,12 @@ def shift_type_covering(ctx: Context, preference: models.ShiftTypeCoveringPrefer
     This expresses the implication "preceptee on (d, s)  =>  preceptor on (d, s)"
     as a hard constraint the solver cannot violate.
     """
-    ds = utils.parse_dates(preference.date, ctx.map_did_d, ctx.dates.range)
+    # An omitted date means "all dates" (see ShiftTypeCoveringPreference), matching
+    # the shift type requirement and successions handlers. Without this guard
+    # parse_dates(None) returns [], silently making the covering rule a no-op.
+    ds = range(ctx.n_days)
+    if preference.date is not None:
+        ds = utils.parse_dates(preference.date, ctx.map_did_d, ctx.dates.range)
     if not isinstance(preference.preceptors, list):
         raise ValueError(f"Preceptors must be a list, but got {type(preference.preceptors)}")
     if not isinstance(preference.preceptees, list):
@@ -721,10 +726,12 @@ def shift_type_covering(ctx: Context, preference: models.ShiftTypeCoveringPrefer
 
     for d in ds:
         for ss in shift_type_groups:
-            # Cross-product: a covering rule fires for every (preceptor group,
-            # preceptee group, shift type group) tuple. This makes a preceptee
-            # covered if AT LEAST ONE of their listed preceptor-groups has a
-            # member working that shift that day.
+            # Cross-product: a covering constraint is added for every (preceptor
+            # group, preceptee group, shift type group) tuple. Each preceptor
+            # group must independently cover, so a preceptee working the shift
+            # requires a member of EACH listed preceptor group on it. Nest a set
+            # as one group ([[A, B]]) to mean "at least one of A/B"; a flat list
+            # ([A, B]) becomes one group per person, demanding every one of them.
             for preceptor_group in preceptors_groups:
                 for preceptee_group in preceptees_groups:
                     preceptor_vars = [ctx.shifts[(d, s, p)] for s in ss for p in preceptor_group]
