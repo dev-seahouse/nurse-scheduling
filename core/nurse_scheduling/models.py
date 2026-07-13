@@ -270,6 +270,16 @@ class ShiftTypeRequirementsPreference(BasePreference):
         return validate_weight(v)
 
 
+class HoursContractMetadata(BaseModel):
+    # Authoring-only metadata: its presence marks a shift count as a monthly
+    # contracted-hours contract (frontend uncredited-leave guard signal), and
+    # `unit` is the coefficient unit the frontend uses to credit LEAVE. Ignored
+    # by the solver (mirrors ShiftType.durationMinutes above). Strictly typed so
+    # malformed metadata cannot slip through the surrounding extra="forbid".
+    model_config = ConfigDict(extra="forbid")
+    unit: Literal["half-hour", "hour"]
+
+
 class ShiftCountPreference(BasePreference):
     model_config = ConfigDict(extra="forbid")
     type: Annotated[str, Field(pattern=f"^{SHIFT_COUNT}$")] = SHIFT_COUNT
@@ -280,6 +290,10 @@ class ShiftCountPreference(BasePreference):
     countShiftTypeCoefficients: list[tuple[str, int]] | None = None
     expression: str | list[str]  # Single mathematical expression or list of mathematical expressions
     target: int | list[int]  # Single target value or list of target values
+    # Authoring-only hours-contract marker; unused by the solver (see
+    # HoursContractMetadata). Accept-and-ignore so it round-trips through the
+    # posted YAML without tripping the extra="forbid" above.
+    hoursContract: HoursContractMetadata | None = None
     weight: int | float = Field(default=-1)  # For float can only be .inf or -.inf
 
     @field_validator("weight")

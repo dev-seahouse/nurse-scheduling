@@ -252,3 +252,300 @@ def test_leave_does_not_satisfy_all_succession():
     # shift. Since ALL excludes leave, these conflict and the model is infeasible.
     _df, status = _run(LEAVE_DOES_NOT_SATISFY_ALL_SUCCESSION_SCENARIO)
     assert status == "INFEASIBLE"
+
+
+# ===========================================================================
+# R1-R4: characterization regressions locking the confirmed LEAVE contract
+# (contract C1-C4). Every test carries a discriminating observable so it
+# cannot pass without proving its claim. See the `leave-daystate-contract`
+# and `guard-tech-plan` (Part 2) planning artifacts.
+# ===========================================================================
+
+
+# --- R1: C3 - a no-LEAVE config never activates leave. ---------------------
+# Single-nurse roster: D is required on Feb 1, nothing is required on Feb 2,
+# and no LEAVE is ever requested. Feb 2 is unconstrained (worked or OFF are
+# equally optimal), so this test asserts only the invariant that matters: no
+# cell may render "Leave".
+R1_NO_LEAVE_SCENARIO = """
+apiVersion: alpha
+description: No LEAVE request anywhere - leave must never be activated (C3)
+dates:
+  range:
+    startDate: 2026-02-01
+    endDate: 2026-02-02
+people:
+  items:
+    - id: 0
+shiftTypes:
+  items:
+    - id: D
+preferences:
+  - type: at most one shift per day
+  - type: shift type requirement
+    description: Nurse 0 works D on Feb 1
+    shiftType: D
+    date: 1
+    requiredNumPeople: 1
+"""
+
+
+def test_r1_no_leave_config_never_activates_leave():
+    df, status = _run(R1_NO_LEAVE_SCENARIO)
+    assert status == "OPTIMAL"
+    # Discriminating observable: zero "Leave" cells. This is exactly what C3
+    # claims - with no LEAVE request anywhere, nothing activates leave. We do
+    # NOT assert the D/OFF placement: Feb 2 is unconstrained, so D-then-OFF and
+    # D-then-D are both optimal and the specific layout rides on solver
+    # tie-breaking. The leave count is the invariant that does not.
+    assert _count_leave_cells(df) == 0
+
+
+# --- R2: C4 - OFF credits 0h, LEAVE credits its coefficient. ---------------
+# One worked D (16), one pinned LEAVE, one pinned OFF, and a hard exact hours
+# target of 32 over a count that lists D + LEAVE (OFF absent). The target is
+# reachable only if LEAVE credits 16 AND the OFF day credits nothing: worked
+# 16 + leave 16 + off 0 == 32.
+R2_OFF_VS_LEAVE_SCENARIO = """
+apiVersion: alpha
+description: OFF credits 0h while LEAVE credits its coefficient (C4)
+dates:
+  range:
+    startDate: 2026-02-01
+    endDate: 2026-02-03
+people:
+  items:
+    - id: 0
+shiftTypes:
+  items:
+    - id: D
+      description: 8h day shift
+preferences:
+  - type: at most one shift per day
+  - type: shift type requirement
+    description: Nurse 0 works D on Feb 1
+    shiftType: D
+    date: 1
+    requiredNumPeople: 1
+  - type: shift request
+    description: Nurse 0 on paid leave Feb 2 (hard pin)
+    person: 0
+    date: 2
+    shiftType: LEAVE
+    weight: .inf
+  - type: shift request
+    description: Nurse 0 off Feb 3 (hard pin)
+    person: 0
+    date: 3
+    shiftType: OFF
+    weight: .inf
+  - type: shift count
+    description: >-
+      Worked hours + paid-leave credit must equal exactly 32 half-hours.
+      OFF (Feb 3) is not listed, so it must contribute 0.
+    person: 0
+    countDates: ALL
+    countShiftTypes: [D, LEAVE]
+    countShiftTypeCoefficients:
+      - [D, 16]
+      - [LEAVE, 16]
+    expression: 'x = T'
+    target: 32
+    weight: .inf
+"""
+
+# Discriminator variant: identical, but LEAVE is dropped from the count so it
+# credits 0 (the backend rejects an explicit coefficient of 0, so absence is
+# how "leave credits nothing" is expressed). x then equals 16 != 32.
+R2_OFF_VS_LEAVE_UNCREDITED = """
+apiVersion: alpha
+description: Same roster, LEAVE uncredited - the hard target becomes infeasible
+dates:
+  range:
+    startDate: 2026-02-01
+    endDate: 2026-02-03
+people:
+  items:
+    - id: 0
+shiftTypes:
+  items:
+    - id: D
+      description: 8h day shift
+preferences:
+  - type: at most one shift per day
+  - type: shift type requirement
+    description: Nurse 0 works D on Feb 1
+    shiftType: D
+    date: 1
+    requiredNumPeople: 1
+  - type: shift request
+    description: Nurse 0 on paid leave Feb 2 (hard pin)
+    person: 0
+    date: 2
+    shiftType: LEAVE
+    weight: .inf
+  - type: shift request
+    description: Nurse 0 off Feb 3 (hard pin)
+    person: 0
+    date: 3
+    shiftType: OFF
+    weight: .inf
+  - type: shift count
+    person: 0
+    countDates: ALL
+    countShiftTypes: [D]
+    countShiftTypeCoefficients:
+      - [D, 16]
+    expression: 'x = T'
+    target: 32
+    weight: .inf
+"""
+
+
+def test_r2_off_credits_zero_leave_credits_coefficient():
+    df, status = _run(R2_OFF_VS_LEAVE_SCENARIO)
+    # OPTIMAL at target 32 proves D credited 16, LEAVE credited 16, OFF 0.
+    assert status == "OPTIMAL"
+    assert _cell(df, person_row=0, date_col=0) == "D"
+    assert _cell(df, person_row=0, date_col=1) == "Leave"
+    assert _cell(df, person_row=0, date_col=2) == ""  # OFF, contributes 0h
+    assert _count_leave_cells(df) == 1
+
+    # Discriminating observable: with the LEAVE credit removed the same hard
+    # target is unreachable. This is what pins "LEAVE credits its coefficient"
+    # rather than merely "the scenario happens to be OPTIMAL".
+    _df, status_uncredited = _run(R2_OFF_VS_LEAVE_UNCREDITED)
+    assert status_uncredited == "INFEASIBLE"
+
+
+# --- R3: the footgun - omitting LEAVE from the count costs one worked shift.
+# Nurse 0 is pinned on LEAVE Feb 1, then a hard 48-half-hour target over a
+# count that lists ONLY D (LEAVE omitted - the footgun). Feb 2-4 are the only
+# workable days, so she must work all three (3 x 16 == 48). Had LEAVE been
+# credited (16), 48 would need only two worked D days - the omission forces
+# exactly one extra worked shift. Characterization of current behavior, not a
+# backend defect; it is the behavior the frontend guard is meant to catch.
+R3_UNCREDITED_LEAVE_SCENARIO = """
+apiVersion: alpha
+description: LEAVE omitted from the hours count forces one extra worked shift
+dates:
+  range:
+    startDate: 2026-02-01
+    endDate: 2026-02-04
+people:
+  items:
+    - id: 0
+shiftTypes:
+  items:
+    - id: D
+      description: 8h day shift
+preferences:
+  - type: at most one shift per day
+  - type: shift request
+    description: Nurse 0 on paid leave Feb 1 (hard pin)
+    person: 0
+    date: 1
+    shiftType: LEAVE
+    weight: .inf
+  - type: shift count
+    description: >-
+      Hard 48 half-hours from worked shifts only - LEAVE is deliberately
+      absent, so paid leave credits nothing toward the contract.
+    person: 0
+    countDates: ALL
+    countShiftTypes: [D]
+    countShiftTypeCoefficients:
+      - [D, 16]
+    expression: 'x = T'
+    target: 48
+    weight: .inf
+"""
+
+
+def test_r3_uncredited_leave_forces_extra_worked_shift():
+    df, status = _run(R3_UNCREDITED_LEAVE_SCENARIO)
+    assert status == "OPTIMAL"
+    # Discriminating observable: the pinned leave day plus three worked D
+    # days. If leave had credited 16 the count would be satisfied by two D
+    # days; the uncredited config forces the third. Assert both exact counts.
+    row = [_cell(df, person_row=0, date_col=c) for c in range(4)]
+    assert row.count("D") == 3
+    assert _count_leave_cells(df) == 1
+
+
+# --- R4: end-to-end - the 160h LEAVE credit is load-bearing (C1+C2+C4). ----
+# Half-hour coefficients of the worked shift types in the 160h prototype.
+# LEAVE is intentionally excluded: R4's observable is nurse 0's *worked*
+# coefficient total, which the credit shifts between 288 and 320.
+_PROTOTYPE_WORKED_COEFFICIENTS = {
+    "LD": 25,
+    "AM1": 14,
+    "AM2": 16,
+    "AM3": 18,
+    "PM1": 18,
+    "PM2": 16,
+    "PM3": 14,
+}
+
+
+def _prototype_yaml_path() -> str:
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(repo_root, "prototype", "leave_daystate_160h.yaml")
+
+
+def _nurse_worked_total(df, person_row: int, num_dates: int) -> int:
+    """Sum the half-hour coefficients of nurse `person_row`'s solved worked
+    shifts. LEAVE and OFF cells contribute 0 (they are not worked shifts)."""
+    return sum(
+        _PROTOTYPE_WORKED_COEFFICIENTS.get(_cell(df, person_row, c), 0)
+        for c in range(num_dates)
+    )
+
+
+def test_r4_prototype_160h_leave_credit_is_load_bearing():
+    with open(_prototype_yaml_path(), "rb") as f:
+        yaml_bytes = f.read()
+
+    # Baseline: LEAVE is credited 16 in the 160h count. Each nurse's hard
+    # total is 320 half-hours; nurse 0's two pinned leave days credit 32, so
+    # her worked shifts must sum to exactly 288.
+    df, _solution, _score, status, _cell_export_info = nurse_scheduling.schedule(yaml_bytes)
+    num_dates = 28  # Feb 2026
+    assert status == "OPTIMAL"
+    assert _count_leave_cells(df) == 2
+    assert _nurse_worked_total(df, person_row=0, num_dates=num_dates) == 288
+
+    # Mutated variant, constructed in-test: drop LEAVE from the 160h count so
+    # paid leave credits nothing. The model stays OPTIMAL (feasibility is not
+    # the signal) but nurse 0 must now reach 320 half-hours from worked shifts
+    # alone - the 288 -> 320 delta is what proves the credit is load-bearing.
+    #
+    # ruamel.yaml (YAML 1.2) mirrors the engine's loader; PyYAML would
+    # mis-parse `countShiftTypes: OFF` as the boolean False.
+    from io import BytesIO, StringIO
+
+    from ruamel.yaml import YAML
+
+    ruamel = YAML(typ="safe")
+    data = ruamel.load(BytesIO(yaml_bytes))
+    mutated = False
+    for pref in data["preferences"]:
+        count_shift_types = pref.get("countShiftTypes")
+        if (
+            pref.get("type") == "shift count"
+            and isinstance(count_shift_types, list)
+            and "LEAVE" in count_shift_types
+        ):
+            pref["countShiftTypes"] = [s for s in count_shift_types if s != "LEAVE"]
+            pref["countShiftTypeCoefficients"] = [
+                c for c in pref["countShiftTypeCoefficients"] if c[0] != "LEAVE"
+            ]
+            mutated = True
+    assert mutated, "expected a 160h shift-count listing LEAVE to mutate"
+
+    buf = StringIO()
+    ruamel.dump(data, buf)
+    df_mut, _s, _sc, status_mut, _c = nurse_scheduling.schedule(buf.getvalue().encode("utf-8"))
+    assert status_mut == "OPTIMAL"
+    assert _count_leave_cells(df_mut) == 2  # leave is still pinned (C1), still no coverage (C2)
+    assert _nurse_worked_total(df_mut, person_row=0, num_dates=num_dates) == 320
