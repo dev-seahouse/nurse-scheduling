@@ -120,7 +120,8 @@ export default function ItemGroupEditorPage({
     members: string[];
     editingId?: string;
     isItem: boolean;  // Whether the draft is for an item or a group
-    durationMinutes?: string;  // Shift-type items only (authoring-only duration)
+    durationHours?: string;  // Shift-type items only (authoring-only duration, hours part)
+    durationMins?: string;   // Shift-type items only (authoring-only duration, minutes part)
   }>({
     id: '',
     description: '',
@@ -160,12 +161,16 @@ export default function ItemGroupEditorPage({
       return;
     }
 
-    // Parse the authoring-only shift-type duration (blank clears it).
-    const trimmedDuration = (draft.durationMinutes ?? '').trim();
-    const parsedDuration = trimmedDuration === '' ? undefined : Number.parseInt(trimmedDuration, 10);
+    // Parse the authoring-only shift-type duration (hours + minutes → total minutes; blank clears it).
+    const trimmedHours = (draft.durationHours ?? '').trim();
+    const trimmedMins = (draft.durationMins ?? '').trim();
+    const parsedHours = trimmedHours === '' ? 0 : Number.parseInt(trimmedHours, 10);
+    const parsedMins = trimmedMins === '' ? 0 : Number.parseInt(trimmedMins, 10);
+    const totalMinutes =
+      (Number.isNaN(parsedHours) ? 0 : parsedHours) * 60 + (Number.isNaN(parsedMins) ? 0 : parsedMins);
     const durationMinutes =
-      dataType === DataType.SHIFT_TYPES && parsedDuration !== undefined && !Number.isNaN(parsedDuration) && parsedDuration > 0
-        ? parsedDuration
+      dataType === DataType.SHIFT_TYPES && (trimmedHours !== '' || trimmedMins !== '') && totalMinutes > 0
+        ? totalMinutes
         : undefined;
 
     const wasEditing = !!draft.editingId;
@@ -249,7 +254,12 @@ export default function ItemGroupEditorPage({
           members: [],
           editingId: id,
           isItem: true,
-          durationMinutes: item.durationMinutes != null ? String(item.durationMinutes) : ''
+          durationHours: item.durationMinutes != null && Math.floor(item.durationMinutes / 60) > 0
+            ? String(Math.floor(item.durationMinutes / 60))
+            : '',
+          durationMins: item.durationMinutes != null && item.durationMinutes % 60 > 0
+            ? String(item.durationMinutes % 60)
+            : ''
         });
       } else {
         console.error(`${itemLabel} with ID ${id} not found during edit. ${ERROR_SHOULD_NOT_HAPPEN}`);
@@ -399,8 +409,12 @@ export default function ItemGroupEditorPage({
     setDraft(prev => ({ ...prev, description: e.target.value }));
   };
 
-  const handleDraftDurationChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setDraft(prev => ({ ...prev, durationMinutes: e.target.value }));
+  const handleDraftDurationHoursChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setDraft(prev => ({ ...prev, durationHours: e.target.value }));
+  };
+
+  const handleDraftDurationMinutesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setDraft(prev => ({ ...prev, durationMins: e.target.value }));
   };
 
   const handleMemberToggle = (id: string) => {
@@ -637,8 +651,10 @@ export default function ItemGroupEditorPage({
           onSave={handleSave}
           onCancel={handleCancel}
           showDurationField={dataType === DataType.SHIFT_TYPES}
-          durationValue={draft.durationMinutes ?? ''}
-          onDurationChange={handleDraftDurationChange}
+          durationHoursValue={draft.durationHours ?? ''}
+          durationMinutesValue={draft.durationMins ?? ''}
+          onDurationHoursChange={handleDraftDurationHoursChange}
+          onDurationMinutesChange={handleDraftDurationMinutesChange}
         />
       )}
 
