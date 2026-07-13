@@ -796,11 +796,6 @@ export default function OptimizeAndExportPage() {
           </div>
           <div className="space-y-5 p-5">
             <div className="space-y-3">
-              <div>
-                <h3 className="text-sm font-semibold text-gray-900">Backend</h3>
-                <p className="mt-1 break-all text-xs text-gray-500">{BACKEND_API_URL}</p>
-              </div>
-
               {(serverHealth || serverStatus === 'offline') && (
                 <div className="space-y-2">
                   {serverHealth && (
