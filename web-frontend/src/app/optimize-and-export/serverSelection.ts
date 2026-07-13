@@ -24,27 +24,12 @@ export interface ServerHealthResponse {
   appVersion: string;
 }
 
-export interface ServerHealthCheckResult {
-  endpoint: string;
-  index: number;
-  health: ServerHealthResponse;
-}
+// Default backend used when NEXT_PUBLIC_BACKEND_API_URL is not set at build time.
+export const DEFAULT_BACKEND_API_URL = 'http://localhost:8000';
 
-export const LOCAL_BACKEND_API_URL = 'http://localhost:8000';
-export const PRODUCTION_BACKEND_API_URL = 'https://api.nursescheduling.org';
-export const SHOULD_DISABLE_PRODUCTION_BACKEND_API = process.env.NODE_ENV === 'test'
-  || process.env.NEXT_PUBLIC_DISABLE_HOSTED_OPTIMIZE_API === '1';
-export const BACKEND_API_CANDIDATES = SHOULD_DISABLE_PRODUCTION_BACKEND_API
-  ? [LOCAL_BACKEND_API_URL]
-  : [LOCAL_BACKEND_API_URL, PRODUCTION_BACKEND_API_URL];
-export const INITIAL_BACKEND_API_URL = BACKEND_API_CANDIDATES[0];
-
-export function selectOfflineFallbackBackendApiUrl(candidates: string[]): string {
-  return candidates.includes(PRODUCTION_BACKEND_API_URL)
-    ? PRODUCTION_BACKEND_API_URL
-    : candidates[0];
-}
-
-export function selectPreferredServer(results: ServerHealthCheckResult[]): ServerHealthCheckResult | undefined {
-  return [...results].sort((a, b) => a.index - b.index)[0];
-}
+// The single backend URL the app talks to, resolved at build time from
+// NEXT_PUBLIC_BACKEND_API_URL (falling back to the local default). Trailing
+// slashes are trimmed so request paths join cleanly.
+export const BACKEND_API_URL = (process.env.NEXT_PUBLIC_BACKEND_API_URL || DEFAULT_BACKEND_API_URL)
+  .trim()
+  .replace(/\/+$/, '');

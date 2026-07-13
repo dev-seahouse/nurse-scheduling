@@ -20,11 +20,9 @@
 // The Optimize and Export page for Tab "11. Optimize and Export"
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { FiDownload, FiAlertCircle, FiCheckCircle, FiLoader, FiRefreshCw, FiWifi, FiWifiOff, FiActivity, FiTrash2 } from 'react-icons/fi';
-import { DataTable } from '@/components/DataTable';
-import { InlineEdit } from '@/components/InlineEdit';
+import { FiDownload, FiAlertCircle, FiCheckCircle, FiLoader, FiWifi, FiWifiOff, FiActivity, FiRefreshCw } from 'react-icons/fi';
 import OptimizationProgressChart, { OptimizationProgressPoint } from '@/components/OptimizationProgressChart';
 import NumberInput from '@/components/NumberInput';
 import { useSchedulingData } from '@/hooks/useSchedulingData';
@@ -33,14 +31,12 @@ import { restorePeopleIdsInXlsx } from '@/utils/restorePeopleIdsInXlsx';
 import { generateYamlFromState } from '@/utils/yamlGenerator';
 import { GITHUB_PRIVACY_URL } from '@/constants/urls';
 import {
-  BACKEND_API_CANDIDATES,
-  selectPreferredServer,
+  BACKEND_API_URL,
   type ServerHealthResponse,
 } from '@/app/optimize-and-export/serverSelection';
 import { CURRENT_APP_VERSION, parseVersionParts } from '@/utils/version';
 
-type ServerStatus = 'unchecked' | 'checking' | 'online' | 'offline';
-type ServerSelection = 'auto' | string;
+type ServerStatus = 'checking' | 'online' | 'offline';
 
 interface OptimizeJobResponse {
   jobId: string;
@@ -78,131 +74,9 @@ interface OptimizePhaseEvent {
   message?: string;
 }
 
-interface OptimizeServerEntry {
-  endpoint: string;
-  status: ServerStatus;
-  health: ServerHealthResponse | null;
-  error: string | null;
-  lastCheckedAt: Date | null;
-  pingMs: number | null;
-  healthProbeId: number;
-}
-
-type BackendTableRow =
-  | { kind: 'auto' }
-  | { kind: 'server'; server: OptimizeServerEntry };
-
-interface StoredOptimizeServerEntry {
-  endpoint: string;
-}
-
-interface StoredOptimizeServerOptions {
-  servers: StoredOptimizeServerEntry[];
-  selectedServerEndpoint: ServerSelection;
-}
-
 const TERMINAL_JOB_STATUSES = new Set(['optimal', 'feasible', 'infeasible', 'cancelled', 'failed']);
 const OPTIMIZE_CLIENT_HEARTBEAT_INTERVAL_MS = 10_000;
 const HEALTH_CHECK_TIMEOUT_MS = 3000;
-const INITIAL_HEALTH_CHECK_TIMEOUT_MS = 3000;
-const SERVER_OPTIONS_STORAGE_KEY = 'nurse-scheduling-optimize-server-options';
-const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
-
-function createServerEntry(
-  server: StoredOptimizeServerEntry,
-  status: ServerStatus = 'unchecked',
-): OptimizeServerEntry {
-  return {
-    ...server,
-    status,
-    health: null,
-    error: null,
-    lastCheckedAt: null,
-    pingMs: null,
-    healthProbeId: 0,
-  };
-}
-
-function createDefaultServerEntries(): OptimizeServerEntry[] {
-  return BACKEND_API_CANDIDATES.map((endpoint) => createServerEntry({
-    endpoint,
-  }));
-}
-
-function toStoredServerOptions(
-  servers: OptimizeServerEntry[],
-  selectedServerEndpoint: ServerSelection,
-): StoredOptimizeServerOptions {
-  return {
-    servers: servers.map(({ endpoint }) => ({ endpoint })),
-    selectedServerEndpoint,
-  };
-}
-
-function dedupeServerEntries(servers: StoredOptimizeServerEntry[]): OptimizeServerEntry[] {
-  const seenEndpoints = new Set<string>();
-
-  return servers.reduce<OptimizeServerEntry[]>((entries, server) => {
-    if (typeof server.endpoint !== 'string') {
-      return entries;
-    }
-
-    const endpoint = normalizeEndpoint(server.endpoint);
-    if (!endpoint || seenEndpoints.has(endpoint)) {
-      return entries;
-    }
-
-    seenEndpoints.add(endpoint);
-    entries.push(createServerEntry({
-      endpoint,
-    }));
-    return entries;
-  }, []);
-}
-
-function loadStoredServerOptions(): { servers: OptimizeServerEntry[]; selectedServerEndpoint: ServerSelection } {
-  if (typeof window === 'undefined') {
-    return { servers: createDefaultServerEntries(), selectedServerEndpoint: 'auto' };
-  }
-
-  const stored = window.localStorage.getItem(SERVER_OPTIONS_STORAGE_KEY);
-  if (stored === null) {
-    return { servers: createDefaultServerEntries(), selectedServerEndpoint: 'auto' };
-  }
-
-  try {
-    const parsed = JSON.parse(stored) as Partial<StoredOptimizeServerOptions>;
-    if (!Array.isArray(parsed.servers)) {
-      return { servers: createDefaultServerEntries(), selectedServerEndpoint: 'auto' };
-    }
-
-    const servers = dedupeServerEntries(parsed.servers);
-    const parsedSelection = typeof parsed.selectedServerEndpoint === 'string'
-      ? parsed.selectedServerEndpoint
-      : 'auto';
-    const selectedServerEndpoint = parsedSelection === 'auto' || servers.some(server => server.endpoint === parsedSelection)
-      ? parsedSelection
-      : 'auto';
-
-    return {
-      servers,
-      selectedServerEndpoint,
-    };
-  } catch {
-    return { servers: createDefaultServerEntries(), selectedServerEndpoint: 'auto' };
-  }
-}
-
-function persistServerOptions(servers: OptimizeServerEntry[], selectedServerEndpoint: ServerSelection): void {
-  window.localStorage.setItem(
-    SERVER_OPTIONS_STORAGE_KEY,
-    JSON.stringify(toStoredServerOptions(servers, selectedServerEndpoint)),
-  );
-}
-
-function deleteStoredServerOptions(): void {
-  window.localStorage.removeItem(SERVER_OPTIONS_STORAGE_KEY);
-}
 
 function isDirtyAppVersion(version: string): boolean {
   return parseVersionParts(version).dirty;
@@ -384,19 +258,6 @@ function getEventBadgeClasses(type: string): string {
   return 'bg-gray-100 text-gray-700 ring-gray-200';
 }
 
-function getServerStatusBadgeClasses(status: ServerStatus): string {
-  if (status === 'online') {
-    return 'bg-green-50 text-green-700 ring-green-200';
-  }
-  if (status === 'offline') {
-    return 'bg-red-50 text-red-700 ring-red-200';
-  }
-  if (status === 'checking') {
-    return 'bg-gray-50 text-gray-600 ring-gray-200';
-  }
-  return 'bg-gray-100 text-gray-600 ring-gray-200';
-}
-
 function formatServerStatus(status: ServerStatus): string {
   if (status === 'checking') {
     return 'Checking';
@@ -404,10 +265,7 @@ function formatServerStatus(status: ServerStatus): string {
   if (status === 'online') {
     return 'Online';
   }
-  if (status === 'offline') {
-    return 'Offline';
-  }
-  return 'Unchecked';
+  return 'Offline';
 }
 
 export default function OptimizeAndExportPage() {
@@ -422,16 +280,8 @@ export default function OptimizeAndExportPage() {
     filterAutoGeneratedState
   } = useSchedulingData();
 
-  const initialServerOptions = useRef({
-    servers: createDefaultServerEntries(),
-    selectedServerEndpoint: 'auto' as ServerSelection,
-  });
-  const [serverEntries, setServerEntries] = useState<OptimizeServerEntry[]>(initialServerOptions.current.servers);
-  const [selectedServerEndpoint, setSelectedServerEndpoint] = useState<ServerSelection>(initialServerOptions.current.selectedServerEndpoint);
-  const [editingServerEndpoint, setEditingServerEndpoint] = useState<string | null>(null);
-  const [addingServer, setAddingServer] = useState(false);
-  const [addServerError, setAddServerError] = useState<string | null>(null);
-  const [lockedOptimizeEndpoint, setLockedOptimizeEndpoint] = useState<string | null>(null);
+  const [serverStatus, setServerStatus] = useState<ServerStatus>('checking');
+  const [serverHealth, setServerHealth] = useState<ServerHealthResponse | null>(null);
   const [prettifyArg, setPrettifyArg] = useState(true);
   const [anonymizeScheduleData, setAnonymizeScheduleData] = useState(true);
   const [timeoutArg, setTimeoutArg] = useState<number | string>(300);
@@ -450,42 +300,8 @@ export default function OptimizeAndExportPage() {
   const eventLogRef = useRef<HTMLDivElement | null>(null);
   const savedDownloadUrlRef = useRef<string | null>(null);
   const shouldScrollEventLogToBottomRef = useRef(true);
-  // pageMountId invalidates async work from earlier page visits; healthProbeId
-  // orders repeated probes for the same endpoint within the current visit.
-  const pageMountIdRef = useRef(0);
-  const latestHealthProbeIdRef = useRef(0);
-  const serverProbeControllersRef = useRef<Map<string, AbortController>>(new Map());
-  const selectedServer = selectedServerEndpoint === 'auto'
-    ? null
-    : serverEntries.find(server => server.endpoint === selectedServerEndpoint) ?? null;
-  const autoServer = selectPreferredServer(
-    serverEntries
-      .map((server, index) => ({ server, index }))
-      .filter((entry): entry is { server: OptimizeServerEntry; index: number } => Boolean(entry.server.health && entry.server.status === 'online'))
-      .map(({ server, index }) => ({
-        endpoint: server.endpoint,
-        index,
-        health: server.health as ServerHealthResponse,
-      }))
-  );
-  const resolvedServer = selectedServerEndpoint === 'auto'
-    ? serverEntries.find(server => server.endpoint === autoServer?.endpoint) ?? null
-    : selectedServer;
-  const resolvedOptimizeEndpoint = lockedOptimizeEndpoint ?? resolvedServer?.endpoint ?? serverEntries[0]?.endpoint ?? '';
-  const autoServerStatus: ServerStatus = autoServer
-    ? 'online'
-    : serverEntries.some(server => server.status === 'checking')
-      ? 'checking'
-      : serverEntries.some(server => server.status === 'offline')
-        ? 'offline'
-        : 'unchecked';
-  const activeServerStatus: ServerStatus = selectedServerEndpoint === 'auto'
-    ? autoServerStatus
-    : selectedServer?.status ?? 'unchecked';
-  const activeServerHealth = selectedServerEndpoint === 'auto'
-    ? resolvedServer?.health ?? serverEntries.find(server => server.status === 'checking' && server.health)?.health ?? null
-    : selectedServer?.health ?? null;
-  const hasVersionMismatch = Boolean(activeServerHealth && hasAppVersionMismatch(CURRENT_APP_VERSION, activeServerHealth.appVersion));
+
+  const hasVersionMismatch = Boolean(serverHealth && hasAppVersionMismatch(CURRENT_APP_VERSION, serverHealth.appVersion));
   const isDateDataMissing = !dateData.range?.startDate || !dateData.range?.endDate || dateData.items.length === 0;
   const isPeopleDataMissing = peopleData.items.length === 0;
   const isShiftTypeDataMissing = shiftTypeData.items.length === 0 && shiftTypeData.groups.length === 0;
@@ -497,11 +313,11 @@ export default function OptimizeAndExportPage() {
     !TERMINAL_JOB_STATUSES.has(scheduleStatus.toLowerCase())
   );
   const isCancelling = scheduleStatus === 'cancelling';
-  const isOptimizeDisabled = isOptimizing || isRequiredDataMissing || activeServerStatus !== 'online';
+  const isOptimizeDisabled = isOptimizing || isRequiredDataMissing || serverStatus !== 'online';
   const optimizeDisabledReason = isRequiredDataMissing
     ? 'Complete the missing schedule configuration before optimizing.'
-    : activeServerStatus !== 'online'
-      ? 'Backend unavailable. Check or select an online backend.'
+    : serverStatus !== 'online'
+      ? 'Backend unavailable. Check that the configured backend is running.'
       : null;
 
   // Create the current state object for YAML export (filtering out autogenerated items)
@@ -557,93 +373,33 @@ export default function OptimizeAndExportPage() {
     }
   }, [sseEvents.length]);
 
-  useIsomorphicLayoutEffect(() => {
-    const storedServerOptions = loadStoredServerOptions();
-    initialServerOptions.current = storedServerOptions;
-    setServerEntries(storedServerOptions.servers);
-    setSelectedServerEndpoint(storedServerOptions.selectedServerEndpoint);
-  }, []);
+  // Health-check the single configured backend URL. Runs once on mount and again
+  // on manual re-check; a new run supersedes (aborts) any in-flight one.
+  const healthCheckControllerRef = useRef<AbortController | null>(null);
+  const healthCheckIdRef = useRef(0);
 
-  const saveServerOptions = useCallback((servers: OptimizeServerEntry[], nextSelectedServerEndpoint = selectedServerEndpoint) => {
-    persistServerOptions(servers, nextSelectedServerEndpoint);
-  }, [selectedServerEndpoint]);
-
-  const startServerCheck = useCallback((server: OptimizeServerEntry) => {
-    const endpoint = normalizeEndpoint(server.endpoint);
-    if (!endpoint) {
-      return;
-    }
-
-    const pageMountId = pageMountIdRef.current;
-    const healthProbeId = latestHealthProbeIdRef.current + 1;
-    latestHealthProbeIdRef.current = healthProbeId;
-    const startedAt = performance.now();
-
-    serverProbeControllersRef.current.get(endpoint)?.abort();
+  const runHealthCheck = useCallback(() => {
+    healthCheckControllerRef.current?.abort();
     const controller = new AbortController();
-    serverProbeControllersRef.current.set(endpoint, controller);
+    healthCheckControllerRef.current = controller;
+    const checkId = ++healthCheckIdRef.current;
 
-    setServerEntries(currentServers => currentServers.map(currentServer => (
-      currentServer.endpoint === endpoint
-        ? {
-            ...currentServer,
-            endpoint,
-            status: 'checking',
-            error: null,
-            healthProbeId,
-          }
-        : currentServer
-    )));
-
-    void fetchServerHealth(endpoint, INITIAL_HEALTH_CHECK_TIMEOUT_MS, controller.signal).then(health => {
-      const pingMs = Math.round(performance.now() - startedAt);
-      setServerEntries(currentServers => currentServers.map(currentServer => {
-        if (
-          pageMountId !== pageMountIdRef.current ||
-          normalizeEndpoint(currentServer.endpoint) !== endpoint ||
-          currentServer.healthProbeId !== healthProbeId
-        ) {
-          return currentServer;
-        }
-
-        return {
-          ...currentServer,
-          status: health ? 'online' : 'offline',
-          health,
-          error: health ? null : 'Backend is not responding.',
-          lastCheckedAt: new Date(),
-          pingMs,
-        };
-      }));
-    }).finally(() => {
-      if (serverProbeControllersRef.current.get(endpoint) === controller) {
-        serverProbeControllersRef.current.delete(endpoint);
+    setServerStatus('checking');
+    void fetchServerHealth(BACKEND_API_URL, HEALTH_CHECK_TIMEOUT_MS, controller.signal).then(health => {
+      if (checkId !== healthCheckIdRef.current) {
+        return;
       }
+      setServerHealth(health);
+      setServerStatus(health ? 'online' : 'offline');
     });
   }, []);
-
-  const checkAllServers = useCallback((servers = serverEntries) => {
-    servers.forEach(server => {
-      startServerCheck(server);
-    });
-  }, [serverEntries, startServerCheck]);
 
   useEffect(() => {
-    pageMountIdRef.current += 1;
-    const pageMountId = pageMountIdRef.current;
-    const serverProbeControllers = serverProbeControllersRef.current;
-    initialServerOptions.current.servers.forEach(server => {
-      startServerCheck(server);
-    });
-
+    runHealthCheck();
     return () => {
-      serverProbeControllers.forEach(controller => controller.abort());
-      serverProbeControllers.clear();
-      if (pageMountIdRef.current === pageMountId) {
-        pageMountIdRef.current += 1;
-      }
+      healthCheckControllerRef.current?.abort();
     };
-  }, [startServerCheck]);
+  }, [runHealthCheck]);
 
   useEffect(() => {
     if (!currentJobId || !isJobActive) {
@@ -652,7 +408,7 @@ export default function OptimizeAndExportPage() {
 
     const sendHeartbeat = () => {
       const heartbeatPath = currentJob?.links.heartbeat ?? `/optimize/${currentJobId}/heartbeat`;
-      void fetch(buildApiUrl(resolvedOptimizeEndpoint, heartbeatPath), {
+      void fetch(buildApiUrl(BACKEND_API_URL, heartbeatPath), {
         method: 'POST',
         cache: 'no-store',
       }).catch(() => {
@@ -664,10 +420,10 @@ export default function OptimizeAndExportPage() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [currentJob?.links.heartbeat, currentJobId, isJobActive, resolvedOptimizeEndpoint]);
+  }, [currentJob?.links.heartbeat, currentJobId, isJobActive]);
 
   const getOptimizeJobStatus = useCallback(async (job: OptimizeJobResponse): Promise<OptimizeJobResponse> => {
-    const response = await fetch(buildApiUrl(resolvedOptimizeEndpoint, job.links.status), {
+    const response = await fetch(buildApiUrl(BACKEND_API_URL, job.links.status), {
       method: 'GET',
       cache: 'no-store',
     });
@@ -677,7 +433,7 @@ export default function OptimizeAndExportPage() {
     }
 
     return await response.json() as OptimizeJobResponse;
-  }, [resolvedOptimizeEndpoint]);
+  }, []);
 
   const pollOptimizeJob = useCallback((job: OptimizeJobResponse): Promise<OptimizeJobResponse> => {
     return new Promise((resolve, reject) => {
@@ -709,7 +465,7 @@ export default function OptimizeAndExportPage() {
 
     if (typeof EventSource !== 'undefined') {
       return new Promise((resolve, reject) => {
-        const eventSource = new EventSource(buildApiUrl(resolvedOptimizeEndpoint, job.links.events));
+        const eventSource = new EventSource(buildApiUrl(BACKEND_API_URL, job.links.events));
 
         eventSource.addEventListener('status', (event) => {
           const parsedData = parseSseEventData(event);
@@ -769,7 +525,7 @@ export default function OptimizeAndExportPage() {
     }
 
     return pollOptimizeJob(job);
-  }, [appendSseEvent, pollOptimizeJob, resolvedOptimizeEndpoint]);
+  }, [appendSseEvent, pollOptimizeJob]);
 
   const handleOptimizeAndDownload = async () => {
     if (isRequiredDataMissing) {
@@ -792,14 +548,12 @@ export default function OptimizeAndExportPage() {
       return;
     }
 
-    if (activeServerStatus !== 'online' || !resolvedOptimizeEndpoint) {
-      setErrorMessage('Select an online backend before optimizing.');
+    if (serverStatus !== 'online') {
+      setErrorMessage('Backend is unavailable. Check that the configured backend is running.');
       setSuccessMessage(null);
       return;
     }
 
-    const runEndpoint = resolvedOptimizeEndpoint;
-    setLockedOptimizeEndpoint(runEndpoint);
     setIsOptimizing(true);
     setTimeoutError(null);
     setErrorMessage(null);
@@ -832,7 +586,7 @@ export default function OptimizeAndExportPage() {
 
       formData.append('timeout', String(timeoutArg));
 
-      const createResponse = await fetch(`${normalizeEndpoint(runEndpoint)}/optimize`, {
+      const createResponse = await fetch(`${normalizeEndpoint(BACKEND_API_URL)}/optimize`, {
         method: 'POST',
         body: formData,
       });
@@ -864,7 +618,7 @@ export default function OptimizeAndExportPage() {
         throw new Error(`No downloadable schedule is available. Job status: ${completedJob.status}`);
       }
 
-      const xlsxResponse = await fetch(buildApiUrl(runEndpoint, completedJob.links.xlsx), {
+      const xlsxResponse = await fetch(buildApiUrl(BACKEND_API_URL, completedJob.links.xlsx), {
         method: 'GET',
       });
 
@@ -888,7 +642,7 @@ export default function OptimizeAndExportPage() {
       setSavedDownload({ url, filename });
       downloadFileFromUrl(url, filename);
 
-      void fetch(buildApiUrl(runEndpoint, `/optimize/${completedJob.jobId}`), {
+      void fetch(buildApiUrl(BACKEND_API_URL, `/optimize/${completedJob.jobId}`), {
         method: 'DELETE',
       });
 
@@ -902,7 +656,6 @@ export default function OptimizeAndExportPage() {
       );
     } finally {
       setIsOptimizing(false);
-      setLockedOptimizeEndpoint(null);
     }
   };
 
@@ -912,7 +665,7 @@ export default function OptimizeAndExportPage() {
     }
 
     try {
-      const response = await fetch(buildApiUrl(resolvedOptimizeEndpoint, `/optimize/${currentJobId}/${action}`), {
+      const response = await fetch(buildApiUrl(BACKEND_API_URL, `/optimize/${currentJobId}/${action}`), {
         method: 'POST',
       });
 
@@ -939,328 +692,12 @@ export default function OptimizeAndExportPage() {
     downloadFileFromUrl(savedDownload.url, savedDownload.filename);
   };
 
-  const selectServer = (serverEndpoint: ServerSelection) => {
-    setSelectedServerEndpoint(serverEndpoint);
-    saveServerOptions(serverEntries, serverEndpoint);
-  };
-
-  const isDuplicateServerEndpoint = (endpoint: string, currentEndpoint?: string) => {
-    return serverEntries.some(server => (
-      server.endpoint !== currentEndpoint &&
-      normalizeEndpoint(server.endpoint) === endpoint
-    ));
-  };
-
-  const updateServerEndpoint = (currentEndpoint: string, endpoint: string) => {
-    const invalidateCurrentProbe = () => {
-      serverProbeControllersRef.current.get(currentEndpoint)?.abort();
-      serverProbeControllersRef.current.delete(currentEndpoint);
-      latestHealthProbeIdRef.current += 1;
-      return latestHealthProbeIdRef.current;
-    };
-
-    const normalizedEndpoint = normalizeEndpoint(endpoint);
-    if (!normalizedEndpoint) {
-      const healthProbeId = invalidateCurrentProbe();
-      setServerEntries(currentServers => currentServers.map(server => (
-        server.endpoint === currentEndpoint
-          ? {
-              ...server,
-              status: 'unchecked',
-              health: null,
-              error: 'Backend URL is required.',
-              lastCheckedAt: null,
-              pingMs: null,
-              healthProbeId,
-            }
-          : server
-      )));
-      return;
-    }
-    if (isDuplicateServerEndpoint(normalizedEndpoint, currentEndpoint)) {
-      const healthProbeId = invalidateCurrentProbe();
-      setServerEntries(currentServers => currentServers.map(server => (
-        server.endpoint === currentEndpoint
-          ? {
-              ...server,
-              status: 'unchecked',
-              health: null,
-              error: 'Backend URL already exists.',
-              lastCheckedAt: null,
-              pingMs: null,
-              healthProbeId,
-            }
-          : server
-      )));
-      return;
-    }
-
-    invalidateCurrentProbe();
-
-    const nextSelectedServerEndpoint = selectedServerEndpoint === currentEndpoint
-      ? normalizedEndpoint
-      : selectedServerEndpoint;
-    const nextServers = serverEntries.map(server => (
-      server.endpoint === currentEndpoint
-        ? {
-            ...server,
-            endpoint: normalizedEndpoint,
-            status: 'unchecked' as const,
-            health: null,
-            error: null,
-            lastCheckedAt: null,
-            pingMs: null,
-            healthProbeId: 0,
-          }
-        : server
-    ));
-    setServerEntries(nextServers);
-    setSelectedServerEndpoint(nextSelectedServerEndpoint);
-    saveServerOptions(nextServers, nextSelectedServerEndpoint);
-    const changedServer = nextServers.find(server => server.endpoint === normalizedEndpoint);
-    if (changedServer) {
-      startServerCheck(changedServer);
-    }
-  };
-
-  const addServer = (endpoint: string) => {
-    const normalizedEndpoint = normalizeEndpoint(endpoint);
-    if (!normalizedEndpoint) {
-      setAddingServer(false);
-      setAddServerError(null);
-      return;
-    }
-    if (isDuplicateServerEndpoint(normalizedEndpoint)) {
-      setAddServerError('Backend URL already exists.');
-      return;
-    }
-    const nextServer = createServerEntry({
-      endpoint: normalizedEndpoint,
-    });
-    const nextServers = [...serverEntries, nextServer];
-    setServerEntries(nextServers);
-    saveServerOptions(nextServers);
-    setAddServerError(null);
-    setAddingServer(false);
-    startServerCheck(nextServer);
-  };
-
-  const removeServer = (serverEndpoint: string) => {
-    const nextServers = serverEntries.filter(server => server.endpoint !== serverEndpoint);
-    const nextSelectedServerEndpoint = selectedServerEndpoint === serverEndpoint ? 'auto' : selectedServerEndpoint;
-    serverProbeControllersRef.current.get(serverEndpoint)?.abort();
-    serverProbeControllersRef.current.delete(serverEndpoint);
-    setServerEntries(nextServers);
-    setSelectedServerEndpoint(nextSelectedServerEndpoint);
-    saveServerOptions(nextServers, nextSelectedServerEndpoint);
-  };
-
-  const reorderBackendRows = (rows: BackendTableRow[]) => {
-    const nextServers = rows
-      .filter((row): row is { kind: 'server'; server: OptimizeServerEntry } => row.kind === 'server')
-      .map(row => row.server);
-    setServerEntries(nextServers);
-    saveServerOptions(nextServers);
-  };
-
-  const resetServers = () => {
-    serverProbeControllersRef.current.forEach(controller => controller.abort());
-    serverProbeControllersRef.current.clear();
-    deleteStoredServerOptions();
-    const nextServers = createDefaultServerEntries();
-    setServerEntries(nextServers);
-    setSelectedServerEndpoint('auto');
-    setAddingServer(false);
-    setAddServerError(null);
-    nextServers.forEach(server => {
-      startServerCheck(server);
-    });
-  };
-
-  const backendRows: BackendTableRow[] = [
-    { kind: 'auto' },
-    ...serverEntries.map(server => ({ kind: 'server' as const, server })),
-  ];
-  const isEditingBackendServer = Boolean(editingServerEndpoint || addingServer);
-  const finishBackendEndpointEdit = () => {
-    setEditingServerEndpoint(null);
-  };
-  const backendTableHeaderAction = (
-    <div className="flex flex-wrap gap-2">
-      <button
-        type="button"
-        onClick={() => checkAllServers()}
-        disabled={isOptimizing}
-        className="inline-flex items-center justify-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-      >
-        <FiRefreshCw className="h-4 w-4" />
-        Check all
-      </button>
-      <button
-        type="button"
-        onClick={resetServers}
-        disabled={isOptimizing}
-        className="inline-flex items-center justify-center rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-      >
-        Reset
-      </button>
-    </div>
-  );
-  const backendTableColumns = [
-    {
-      header: 'Server',
-      accessor: (row: BackendTableRow) => {
-        if (row.kind === 'auto') {
-          return (
-            <label className="flex min-w-0 cursor-pointer items-start">
-              <input
-                type="radio"
-                checked={selectedServerEndpoint === 'auto'}
-                onChange={() => selectServer('auto')}
-                disabled={isOptimizing}
-                className="sr-only"
-              />
-              <span className={`min-w-0 border-l-4 pl-2 ${selectedServerEndpoint === 'auto' ? 'border-blue-500' : 'border-transparent'}`}>
-                <span className="block text-sm font-medium text-gray-900">Auto</span>
-                <span className="mt-0.5 block truncate text-xs text-gray-500">
-                  {autoServer ? `Uses ${autoServer.endpoint}` : 'Uses the first online server by priority.'}
-                </span>
-              </span>
-            </label>
-          );
-        }
-
-        const { server } = row;
-        return (
-          <label className="flex min-w-0 cursor-pointer items-start">
-            <input
-              type="radio"
-              checked={selectedServerEndpoint === server.endpoint}
-              onChange={() => selectServer(server.endpoint)}
-              disabled={isOptimizing}
-              className="sr-only"
-              aria-label={`Select ${server.endpoint}`}
-            />
-            <span className={`min-w-0 flex-1 border-l-4 pl-2 ${selectedServerEndpoint === server.endpoint ? 'border-blue-500' : 'border-transparent'}`}>
-              <InlineEdit
-                value={server.endpoint}
-                isEditing={editingServerEndpoint === server.endpoint}
-                onSave={(value) => {
-                  finishBackendEndpointEdit();
-                  updateServerEndpoint(server.endpoint, value);
-                }}
-                onCancel={finishBackendEndpointEdit}
-                onDoubleClick={isOptimizing ? undefined : () => setEditingServerEndpoint(server.endpoint)}
-                className="min-w-0 truncate text-sm font-medium text-gray-900"
-                editClassName="w-full border-gray-300 bg-white text-sm text-gray-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
-              />
-              <span className="mt-1 block truncate text-xs text-gray-500">
-                Last checked: {formatCheckedTime(server.lastCheckedAt)}
-                {server.pingMs !== null ? ` · ${server.pingMs} ms` : ''}
-                {server.error ? ` · ${server.error}` : ''}
-              </span>
-            </span>
-          </label>
-        );
-      },
-    },
-    {
-      header: 'Status',
-      align: 'center' as const,
-      accessor: (row: BackendTableRow) => {
-        const status = row.kind === 'auto' ? autoServerStatus : row.server.status;
-        const label = row.kind === 'auto'
-          ? `Auto status: ${formatServerStatus(status)}`
-          : `${row.server.endpoint} status: ${formatServerStatus(status)}`;
-        return (
-          <span
-            aria-label={label}
-            title={formatServerStatus(status)}
-            className={`inline-flex h-8 w-8 items-center justify-center rounded-md ring-1 ${getServerStatusBadgeClasses(status)}`}
-          >
-            {status === 'checking' ? (
-              <FiLoader className="h-4 w-4 animate-spin" />
-            ) : status === 'offline' ? (
-              <FiWifiOff className="h-4 w-4" />
-            ) : status === 'online' ? (
-              <FiWifi className="h-4 w-4" />
-            ) : (
-              <FiWifi className="h-4 w-4 opacity-60" />
-            )}
-          </span>
-        );
-      },
-    },
-    {
-      header: 'Actions',
-      align: 'center' as const,
-      accessor: (row: BackendTableRow) => {
-        if (row.kind === 'auto') {
-          return <span />;
-        }
-
-        return (
-          <div className="flex items-center justify-center gap-1">
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                startServerCheck(row.server);
-              }}
-              disabled={isOptimizing}
-              aria-label={`Check Backend ${row.server.endpoint}`}
-              title="Check backend"
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-            >
-              <FiRefreshCw className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                removeServer(row.server.endpoint);
-              }}
-              disabled={isOptimizing}
-              aria-label={`Remove Backend ${row.server.endpoint}`}
-              title="Remove backend"
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-red-200 bg-white text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
-            >
-              <FiTrash2 className="h-4 w-4" />
-            </button>
-          </div>
-        );
-      },
-    },
-  ];
-  const backendTableFooter = (
-    <div className="border-t border-gray-200 py-2 pl-8 pr-4">
-      <InlineEdit
-        value=""
-        isEditing={addingServer}
-        onSave={(value) => addServer(value)}
-        onCancel={() => {
-          setAddingServer(false);
-          setAddServerError(null);
-        }}
-        onDoubleClick={isOptimizing ? undefined : () => setAddingServer(true)}
-        placeholder="https://backend.example.test"
-        emptyText="Double-click to add URL"
-        className="min-w-0 truncate text-sm font-medium"
-        editClassName="w-full max-w-xl border-gray-300 bg-white text-sm text-gray-900 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
-        error={addServerError ?? undefined}
-      />
-      {addServerError && (
-        <p className="mt-1 text-xs text-red-600">{addServerError}</p>
-      )}
-    </div>
-  );
-
-  const serverStatusClasses = activeServerStatus === 'online'
+  const serverStatusClasses = serverStatus === 'online'
     ? 'border-green-200 bg-green-50 text-green-700'
-    : activeServerStatus === 'offline'
+    : serverStatus === 'offline'
       ? 'border-red-200 bg-red-50 text-red-700'
       : 'border-gray-200 bg-gray-50 text-gray-600';
-  const serverStatusLabel = formatServerStatus(activeServerStatus);
+  const serverStatusLabel = formatServerStatus(serverStatus);
 
   const runStatus = scheduleStatus
     ? formatRunStatus(scheduleStatus, currentJob?.queuePosition)
@@ -1285,24 +722,37 @@ export default function OptimizeAndExportPage() {
           </p>
         </div>
 
-        <div className={`inline-flex items-center gap-2.5 rounded-md border px-3 py-2 ${serverStatusClasses}`}>
-          <span className="shrink-0">
-            {activeServerStatus === 'offline' ? (
-              <FiWifiOff className="h-4 w-4" />
-            ) : activeServerStatus === 'checking' ? (
-              <FiLoader className="h-4 w-4 animate-spin" />
-            ) : (
-              <FiWifi className="h-4 w-4" />
-            )}
-          </span>
-          <span>
-            <span className="block text-sm font-medium">
-              Server: {serverStatusLabel}
+        <div className="flex items-center gap-2">
+          <div className={`inline-flex items-center gap-2.5 rounded-md border px-3 py-2 ${serverStatusClasses}`}>
+            <span className="shrink-0">
+              {serverStatus === 'offline' ? (
+                <FiWifiOff className="h-4 w-4" />
+              ) : serverStatus === 'checking' ? (
+                <FiLoader className="h-4 w-4 animate-spin" />
+              ) : (
+                <FiWifi className="h-4 w-4" />
+              )}
             </span>
-            <span className="mt-0.5 block max-w-72 truncate text-xs opacity-75">
-              {resolvedOptimizeEndpoint || 'No backend'}
+            <span>
+              <span className="block text-sm font-medium">
+                Server: {serverStatusLabel}
+              </span>
+              <span className="mt-0.5 block max-w-72 truncate text-xs opacity-75">
+                {BACKEND_API_URL || 'No backend'}
+              </span>
             </span>
-          </span>
+          </div>
+          <button
+            type="button"
+            onClick={runHealthCheck}
+            disabled={serverStatus === 'checking'}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 py-2 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:opacity-50"
+            title="Re-check backend status"
+            aria-label="Re-check backend status"
+          >
+            <FiRefreshCw className={`h-3.5 w-3.5 ${serverStatus === 'checking' ? 'animate-spin' : ''}`} />
+            Re-check
+          </button>
         </div>
       </div>
 
@@ -1342,49 +792,21 @@ export default function OptimizeAndExportPage() {
         <section className="rounded-lg border border-gray-200 bg-white">
           <div className="border-b border-gray-200 px-5 py-4">
             <h2 className="text-base font-semibold text-gray-900">Setup and Run</h2>
-            <p className="mt-0.5 text-sm text-gray-600">Choose a backend, set run options, then optimize.</p>
+            <p className="mt-0.5 text-sm text-gray-600">Set run options, then optimize.</p>
           </div>
           <div className="space-y-5 p-5">
             <div className="space-y-3">
-              <DataTable
-                title="Backend"
-                columns={backendTableColumns}
-                data={backendRows}
-                onReorder={isOptimizing || isEditingBackendServer ? undefined : reorderBackendRows}
-                getRowClassName={(row) => (
-                  row.kind === 'auto'
-                    ? `${selectedServerEndpoint === 'auto' ? 'bg-blue-50 ring-1 ring-inset ring-blue-200' : ''} non-draggable`
-                    : selectedServerEndpoint === row.server.endpoint
-                      ? 'bg-blue-50 ring-1 ring-inset ring-blue-200'
-                      : ''
-                )}
-                onRowClick={isOptimizing || isEditingBackendServer
-                  ? undefined
-                  : (row) => {
-                      if (row.kind === 'auto') {
-                        selectServer('auto');
-                      } else {
-                        selectServer(row.server.endpoint);
-                      }
-                    }}
-                headerAction={backendTableHeaderAction}
-                footer={backendTableFooter}
-              />
-              <datalist id="backend-api-candidates">
-                {BACKEND_API_CANDIDATES.map(endpoint => (
-                  <option key={endpoint} value={endpoint} />
-                ))}
-              </datalist>
-              {serverEntries.some(server => server.status === 'checking') && (
-                <p className="text-xs text-gray-500">Checking API endpoints...</p>
-              )}
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900">Backend</h3>
+                <p className="mt-1 break-all text-xs text-gray-500">{BACKEND_API_URL}</p>
+              </div>
 
-              {(activeServerHealth || activeServerStatus === 'offline') && (
+              {(serverHealth || serverStatus === 'offline') && (
                 <div className="space-y-2">
-                  {activeServerHealth && (
+                  {serverHealth && (
                     <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
                       <p>
-                        API version: {activeServerHealth.apiVersion ?? activeServerHealth.version} · Frontend version: {CURRENT_APP_VERSION} · Backend version: {activeServerHealth.appVersion}
+                        API version: {serverHealth.apiVersion ?? serverHealth.version} · Frontend version: {CURRENT_APP_VERSION} · Backend version: {serverHealth.appVersion}
                       </p>
                       {hasVersionMismatch && (
                         <p className="mt-1 font-medium text-amber-700">
@@ -1394,7 +816,7 @@ export default function OptimizeAndExportPage() {
                     </div>
                   )}
 
-                  {activeServerStatus === 'offline' && (
+                  {serverStatus === 'offline' && (
                     <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
                       <div className="flex gap-2">
                         <FiAlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -1497,7 +919,7 @@ export default function OptimizeAndExportPage() {
                 <p className="mt-2 text-sm text-amber-700">{optimizeDisabledReason}</p>
               )}
               <p className="mt-2 text-xs text-gray-500">
-                Submitting sends scheduling data to the selected backend.{' '}
+                Submitting sends scheduling data to the configured backend.{' '}
                 <a
                   href={GITHUB_PRIVACY_URL}
                   target="_blank"
