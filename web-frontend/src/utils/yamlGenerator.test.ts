@@ -19,6 +19,7 @@
 
 // This test is mostly AI generated.
 
+import yaml from 'js-yaml';
 import { generateYamlFromState, isLeafArray, replacer } from '@/utils/yamlGenerator';
 
 describe('yamlGenerator', () => {
@@ -42,5 +43,23 @@ describe('yamlGenerator', () => {
     expect(yaml).toContain('people: [alice, bob]');
     expect(yaml).toContain('meta:\n  enabled: true');
     expect(yaml.endsWith('\n')).toBe(true);
+  });
+
+  it('round-trips shift-count hoursContract metadata through YAML', () => {
+    const preference = {
+      type: 'shift count',
+      person: ['P1'],
+      countDates: ['ALL'],
+      countShiftTypes: ['D'],
+      expression: 'x >= T',
+      target: 1,
+      weight: 1,
+      hoursContract: { unit: 'half-hour' },
+    };
+
+    const serialized = generateYamlFromState({ preferences: [preference] });
+    const parsed = yaml.load(serialized) as { preferences: (typeof preference)[] };
+
+    expect(parsed.preferences[0].hoursContract).toEqual({ unit: 'half-hour' });
   });
 });

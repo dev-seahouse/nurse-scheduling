@@ -20,9 +20,15 @@
 import {
   autoFillCoefficientsFromDurations,
   getCoefficientShiftTypeIds,
+  getLeaveCreditCoefficient,
   syncCoefficientPairs,
   updateCoefficientPair,
+  upsertCoefficientPair,
   validateCoefficientPairs,
+  getUnitMinutes,
+  isHoursContractUnit,
+  parseHoursContract,
+  HOURS_CONTRACT_UNITS,
   HALF_HOUR_UNIT_MINUTES,
   HOUR_UNIT_MINUTES,
 } from '@/utils/countShiftTypeCoefficients';
@@ -131,6 +137,75 @@ describe('countShiftTypeCoefficients', () => {
       const noDurationData = { items: [{ id: 'X', description: 'No duration' }], groups: [] };
       const result = autoFillCoefficientsFromDurations(['X'], [['X', 4]], noDurationData, HALF_HOUR_UNIT_MINUTES);
       expect(result).toEqual([['X', 4]]);
+    });
+  });
+
+  describe('upsertCoefficientPair', () => {
+    it('appends a new pair, preserving all existing pairs in order', () => {
+      const result = upsertCoefficientPair([['D', 25], ['AM', 16]], LEAVE, 16);
+      expect(result).toEqual([['D', 25], ['AM', 16], [LEAVE, 16]]);
+    });
+
+    it('updates an existing pair in place without disturbing the others', () => {
+      const result = upsertCoefficientPair([['D', 25], [LEAVE, 8], ['AM', 16]], LEAVE, 16);
+      expect(result).toEqual([['D', 25], [LEAVE, 16], ['AM', 16]]);
+    });
+
+    it('does not mutate the input array', () => {
+      const pairs: [string, number | string][] = [['D', 25]];
+      upsertCoefficientPair(pairs, LEAVE, 16);
+      expect(pairs).toEqual([['D', 25]]);
+    });
+  });
+
+  describe('getLeaveCreditCoefficient', () => {
+    it('credits 16 half-hour units and 8 hour units for an 8h leave day', () => {
+      expect(getLeaveCreditCoefficient('half-hour')).toBe(16);
+      expect(getLeaveCreditCoefficient('hour')).toBe(8);
+    });
+  });
+
+  describe('hours-contract unit mapping', () => {
+    it('exposes exactly the supported units', () => {
+      expect(HOURS_CONTRACT_UNITS).toEqual(['half-hour', 'hour']);
+    });
+
+    it('maps each unit to its minutes through the single owner', () => {
+      expect(getUnitMinutes('half-hour')).toBe(HALF_HOUR_UNIT_MINUTES);
+      expect(getUnitMinutes('hour')).toBe(HOUR_UNIT_MINUTES);
+    });
+
+    it('recognizes only the supported unit strings', () => {
+      expect(isHoursContractUnit('half-hour')).toBe(true);
+      expect(isHoursContractUnit('hour')).toBe(true);
+      expect(isHoursContractUnit('minutes')).toBe(false);
+      expect(isHoursContractUnit('')).toBe(false);
+      expect(isHoursContractUnit(undefined)).toBe(false);
+      expect(isHoursContractUnit(30)).toBe(false);
+      // Prototype keys must not leak through the guard.
+      expect(isHoursContractUnit('constructor')).toBe(false);
+      expect(isHoursContractUnit('toString')).toBe(false);
+    });
+  });
+
+  describe('parseHoursContract', () => {
+    it('accepts the exact { unit } shape', () => {
+      expect(parseHoursContract({ unit: 'half-hour' })).toEqual({ unit: 'half-hour' });
+      expect(parseHoursContract({ unit: 'hour' })).toEqual({ unit: 'hour' });
+    });
+
+    it('rejects empty, unknown-unit, and extra-key objects', () => {
+      expect(parseHoursContract({})).toBeUndefined();
+      expect(parseHoursContract({ unit: 'minutes' })).toBeUndefined();
+      expect(parseHoursContract({ unit: 'hour', extra: 1 })).toBeUndefined();
+    });
+
+    it('rejects non-object and array values', () => {
+      expect(parseHoursContract(null)).toBeUndefined();
+      expect(parseHoursContract(undefined)).toBeUndefined();
+      expect(parseHoursContract('hour')).toBeUndefined();
+      expect(parseHoursContract(['hour'])).toBeUndefined();
+      expect(parseHoursContract([{ unit: 'hour' }])).toBeUndefined();
     });
   });
 });

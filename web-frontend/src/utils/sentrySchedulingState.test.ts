@@ -47,3 +47,34 @@ it('anonymizes people item IDs and references and removes descriptions in Sentry
   expect(yaml).not.toContain('description:');
   expect(yaml).not.toContain('Sensitive');
 });
+
+it('preserves shift-count hoursContract metadata in Sentry YAML', () => {
+  const state: SchedulingState = {
+    apiVersion: 'alpha',
+    description: 'Sensitive schedule',
+    dates: { range: {}, items: [], groups: [] },
+    people: {
+      items: [{ id: 'Alice', description: 'First person' }],
+      groups: []
+    },
+    shiftTypes: { items: [{ id: 'D', description: '' }], groups: [] },
+    preferences: [
+      {
+        type: 'shift count',
+        person: ['Alice'],
+        countDates: ['ALL'],
+        countShiftTypes: ['D'],
+        expression: 'x >= T',
+        target: 1,
+        weight: 1,
+        hoursContract: { unit: 'hour' }
+      }
+    ]
+  };
+  setLatestSchedulingStateForSentry(state, current => current);
+
+  const yaml = getLatestSchedulingYamlForSentry();
+
+  expect(yaml).toContain('hoursContract:');
+  expect(yaml).toContain('unit: hour');
+});

@@ -28,6 +28,7 @@ import { setLatestSchedulingStateForSentry } from '@/utils/sentrySchedulingState
 import { buildSingaporeHolidayGroups, isSingaporeHolidayRangeSupported, SingaporeHolidayEntry } from '@/utils/singaporeHolidays';
 import { ERROR_SHOULD_NOT_HAPPEN } from '@/constants/errors';
 import { getUniqueCopyLabel } from '@/utils/duplicateLabels';
+import { parseHoursContract } from '@/utils/countShiftTypeCoefficients';
 import { getOrderedEntries } from '@/utils/entityOrdering';
 import { hasNestedReferenceIds } from '@/utils/referenceIds';
 import { generateExportLayoutConfig, normalizeExportConfigOrder, normalizeExportExtraColumnsOrder, normalizeExportExtraRowsOrder, normalizeExportFormattingOrder } from './schedulingExportConfig';
@@ -901,6 +902,19 @@ export function useSchedulingDataInternal() {
           String(id),
           coefficient
         ]);
+      }
+      if (pref.type === SHIFT_COUNT && 'hoursContract' in pref && pref.hoursContract !== undefined) {
+        // Accept only the exact `{ unit: "half-hour" | "hour" }` shape. Drop
+        // malformed/empty/extra-key metadata rather than arm the guard on garbage.
+        const validated = parseHoursContract(pref.hoursContract);
+        if (validated) {
+          pref.hoursContract = validated;
+        } else {
+          delete pref.hoursContract;
+          importWarnings.push(
+            `preferences[${preferenceIndex}].hoursContract is not a valid hours contract ({ unit: "half-hour" | "hour" }). It was dropped.`
+          );
+        }
       }
       if ('people1' in pref && pref.people1) {
         pref.people1 = normalizeReferenceIdsForImport(pref.people1, `preferences[${preferenceIndex}].people1`) as typeof pref.people1;

@@ -17,7 +17,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { CountShiftTypeCoefficientFields } from '@/components/CountShiftTypeCoefficientFields';
 
 const shiftTypeEntries = [
@@ -94,6 +94,128 @@ describe('CountShiftTypeCoefficientFields', () => {
     expect(screen.getByRole('spinbutton', { name: 'D' })).toBeInTheDocument();
     expect(screen.getByRole('spinbutton', { name: 'N' })).toBeInTheDocument();
     expect(screen.getByRole('spinbutton', { name: 'WORK' })).toBeInTheDocument();
+  });
+
+  const durationShiftTypeData = {
+    items: [{ id: 'D', description: 'Day', durationMinutes: 720 }],
+    groups: [],
+  };
+
+  it('offers the private unit toggle for an unmarked count', () => {
+    render(
+      <CountShiftTypeCoefficientFields
+        selectedShiftTypeIds={['D']}
+        coefficients={[]}
+        shiftTypeEntries={shiftTypeEntries}
+        shiftTypeData={durationShiftTypeData}
+        enableDurationAutofill
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole('group', { name: 'Coefficient unit' })).toBeInTheDocument();
+  });
+
+  it('hides the private unit toggle when a controlled contract unit is provided', () => {
+    render(
+      <CountShiftTypeCoefficientFields
+        selectedShiftTypeIds={['D']}
+        coefficients={[]}
+        shiftTypeEntries={shiftTypeEntries}
+        shiftTypeData={durationShiftTypeData}
+        enableDurationAutofill
+        controlledUnit="hour"
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByRole('group', { name: 'Coefficient unit' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /auto-fill/i })).toBeInTheDocument();
+  });
+
+  it('auto-fills from the controlled contract unit, not the private half-hour default', () => {
+    const onChange = vi.fn();
+    render(
+      <CountShiftTypeCoefficientFields
+        selectedShiftTypeIds={['D']}
+        coefficients={[['D', '']]}
+        shiftTypeEntries={shiftTypeEntries}
+        shiftTypeData={durationShiftTypeData}
+        enableDurationAutofill
+        controlledUnit="hour"
+        onChange={onChange}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /auto-fill/i }));
+
+    // 720 min / 60 (hour) = 12, whereas the half-hour default would give 24.
+    expect(onChange).toHaveBeenCalledWith([['D', 12]], '');
+  });
+
+  it('auto-fills from the private half-hour default for an unmarked count', () => {
+    const onChange = vi.fn();
+    render(
+      <CountShiftTypeCoefficientFields
+        selectedShiftTypeIds={['D']}
+        coefficients={[['D', '']]}
+        shiftTypeEntries={shiftTypeEntries}
+        shiftTypeData={durationShiftTypeData}
+        enableDurationAutofill
+        onChange={onChange}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /auto-fill/i }));
+
+    expect(onChange).toHaveBeenCalledWith([['D', 24]], '');
+  });
+
+  it('reports private unit changes upward and auto-fills from the controlled private unit', () => {
+    const onChange = vi.fn();
+    const onPrivateUnitChange = vi.fn();
+    render(
+      <CountShiftTypeCoefficientFields
+        selectedShiftTypeIds={['D']}
+        coefficients={[['D', '']]}
+        shiftTypeEntries={shiftTypeEntries}
+        shiftTypeData={durationShiftTypeData}
+        enableDurationAutofill
+        privateUnit="hour"
+        onPrivateUnitChange={onPrivateUnitChange}
+        onChange={onChange}
+      />
+    );
+
+    // Auto-fill uses the lifted private unit (hour → 720/60 = 12).
+    fireEvent.click(screen.getByRole('button', { name: /auto-fill/i }));
+    expect(onChange).toHaveBeenCalledWith([['D', 12]], '');
+
+    // Toggling notifies the parent instead of mutating internal state.
+    const group = screen.getByRole('group', { name: 'Coefficient unit' });
+    fireEvent.click(within(group).getByRole('button', { name: 'half-hour' }));
+    expect(onPrivateUnitChange).toHaveBeenCalledWith('half-hour');
+  });
+
+  it('disables duration auto-fill when autofillDisabled is set', () => {
+    const onChange = vi.fn();
+    render(
+      <CountShiftTypeCoefficientFields
+        selectedShiftTypeIds={['D']}
+        coefficients={[['D', '']]}
+        shiftTypeEntries={shiftTypeEntries}
+        shiftTypeData={durationShiftTypeData}
+        enableDurationAutofill
+        autofillDisabled
+        controlledUnit="half-hour"
+        onChange={onChange}
+      />
+    );
+
+    const autofill = screen.getByRole('button', { name: /auto-fill/i });
+    expect(autofill).toBeDisabled();
+    fireEvent.click(autofill);
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it('uses one selected shift type as the fixed threshold for the hint', () => {

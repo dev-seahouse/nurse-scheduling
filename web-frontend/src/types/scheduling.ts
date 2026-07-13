@@ -205,6 +205,15 @@ export interface ShiftTypeSuccessionsPreference extends BasePreference {
   weight: number;
 }
 
+// The coefficient unit a shift count's hours contract is expressed in. Presence
+// of `hoursContract` marks a count as a monthly-hours contract; `unit` is the
+// unit its coefficients (and any LEAVE credit) are counted in.
+export type HoursContractUnit = 'half-hour' | 'hour';
+
+export interface HoursContract {
+  unit: HoursContractUnit;
+}
+
 export interface ShiftCountPreference extends BasePreference {
   type: typeof SHIFT_COUNT;
   description?: string;
@@ -212,6 +221,9 @@ export interface ShiftCountPreference extends BasePreference {
   countDates: string[];
   countShiftTypes: string[];
   countShiftTypeCoefficients?: ShiftCountTypeCoefficient[];
+  // Authoring-only metadata: accepted-and-ignored by the solver, round-trips
+  // through the YAML sent to schedule(). Absent = not an hours contract.
+  hoursContract?: HoursContract;
   expression: typeof SUPPORTED_EXPRESSIONS[number];
   target: number;
   weight: number;

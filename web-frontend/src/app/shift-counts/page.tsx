@@ -20,11 +20,15 @@
 // The shift counts management page for Tab "7. Shift Counts"
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { FiHelpCircle, FiAlertCircle } from 'react-icons/fi';
 import { useSchedulingData } from '@/hooks/useSchedulingData';
 import {
+  DataType,
+  HoursContract,
+  HoursContractUnit,
+  Preference,
   ShiftCountPreference,
   SHIFT_COUNT,
   SUPPORTED_EXPRESSIONS
@@ -32,6 +36,7 @@ import {
 import { CheckboxList } from '@/components/CheckboxList';
 import { CountShiftTypeCoefficientFields } from '@/components/CountShiftTypeCoefficientFields';
 import { DraggableCardList } from '@/components/DraggableCardList';
+import { LeaveCreditAdvisory, LeaveCreditBadge } from '@/components/LeaveCreditAdvisory';
 import ToggleButton from '@/components/ToggleButton';
 import NumberInput from '@/components/NumberInput';
 import { isValidWeightValue, getWeightWithPositivePrefix, isWeightNonPositive } from '@/utils/numberParsing';
@@ -40,9 +45,15 @@ import { saveScrollPosition, restoreScrollPosition } from '@/utils/scrolling';
 import { useTabSwitchWarning } from '@/utils/unsavedEditingState';
 import { isImeCompositionKeyEvent } from '@/utils/keyboardEvents';
 import { sortIdsByEntryOrder } from '@/utils/entityOrdering';
+import { isReservedKeyword, LEAVE, LEAVE_CREDIT_MINUTES } from '@/utils/keywords';
+import { findUncreditedLeaveWarnings } from '@/utils/leaveCreditWarning';
 import {
   DraftShiftCountTypeCoefficient,
+  getLeaveCreditCoefficient,
+  getUnitMinutes,
+  HOURS_CONTRACT_UNITS,
   syncCoefficientPairs,
+  upsertCoefficientPair,
   validateCoefficientPairs,
 } from '@/utils/countShiftTypeCoefficients';
 
@@ -52,9 +63,120 @@ interface ShiftCountForm {
   count_dates: string[];
   count_shift_types: string[];
   count_shift_type_coefficients: DraftShiftCountTypeCoefficient[];
+  // Present iff the count is marked as an hours contract. Its unit is the single
+  // control over the count's coefficient unit (drives auto-fill + conversion).
+  hours_contract?: HoursContract;
   expression: typeof SUPPORTED_EXPRESSIONS[number];
   target: number | string;
   weight: number | string;
+}
+
+// Rescale a value from one unit to another (e.g. half-hour→hour halves it).
+// Returns null when the result is not a whole number, so an unsafe conversion
+// can be blocked rather than silently rounding.
+function convertUnitValue(value: number, fromMinutes: number, toMinutes: number): number | null {
+  const scaled = (value * fromMinutes) / toMinutes;
+  return Number.isInteger(scaled) ? scaled : null;
+}
+
+type UnitConversionResult =
+  | { ok: true; coefficients: DraftShiftCountTypeCoefficient[]; target: number | string }
+  | { ok: false; blocked: string[] };
+
+// Atomically convert a count's coefficients AND target between contract units.
+// Every converted value must land on a whole number >= 1; otherwise the whole
+// switch is rejected so no mixed-unit state can occur (D8 permits blocking).
+//
+// Only EXPLICIT authored coefficients are converted. Blank/`""` slots are left
+// untouched — a blank CONCRETE shift type is an implicit backend-default 1 that
+// cannot be re-expressed in the new unit without either changing its meaning or
+// (for group/`ALL` cover slots) manufacturing overlapping pairs, so its presence
+// blocks the switch instead. Group/`ALL` cover slots (`syncCoefficientPairs`
+// exposes them alongside concrete items) are never emitted or blocked on when
+// blank; only their explicit values, if any, convert.
+function convertCountToUnit(
+  coefficients: DraftShiftCountTypeCoefficient[],
+  target: number | string,
+  fromUnit: HoursContractUnit,
+  toUnit: HoursContractUnit,
+  concreteShiftTypeIds: Set<string>
+): UnitConversionResult {
+  const fromMinutes = getUnitMinutes(fromUnit);
+  const toMinutes = getUnitMinutes(toUnit);
+  const blocked: string[] = [];
+
+  const convertedCoefficients = coefficients.map(([id, value]): DraftShiftCountTypeCoefficient => {
+    if (typeof value === 'number') {
+      const scaled = convertUnitValue(value, fromMinutes, toMinutes);
+      if (scaled === null || scaled < 1) {
+        blocked.push(id);
+        return [id, value];
+      }
+      return [id, scaled];
+    }
+    // A blank concrete shift type is an implicit 1 that cannot be safely
+    // converted — block. A blank group/ALL cover slot is not backend-defaulted,
+    // so leave it as-is without blocking. Non-empty mid-edit strings are invalid
+    // and left for save validation.
+    if (value === '' && concreteShiftTypeIds.has(id)) {
+      blocked.push(id);
+    }
+    return [id, value];
+  });
+
+  let convertedTarget = target;
+  if (typeof target === 'number') {
+    const scaledTarget = convertUnitValue(target, fromMinutes, toMinutes);
+    if (scaledTarget === null || scaledTarget < 0) {
+      blocked.push('target');
+    } else {
+      convertedTarget = scaledTarget;
+    }
+  }
+
+  if (blocked.length > 0) {
+    return { ok: false, blocked };
+  }
+  return { ok: true, coefficients: convertedCoefficients, target: convertedTarget };
+}
+
+// Project the in-progress form onto a ShiftCountPreference so the edit-form
+// advisory reflects live edits (adding LEAVE clears it immediately), not the
+// last-saved count. Only the fields the guard reads matter; mid-edit string
+// target/weight collapse to a harmless number for the detection pass.
+function toDetectionShiftCount(formData: ShiftCountForm): ShiftCountPreference {
+  return {
+    type: SHIFT_COUNT,
+    person: formData.person,
+    countDates: formData.count_dates,
+    countShiftTypes: formData.count_shift_types,
+    ...(formData.hours_contract ? { hoursContract: formData.hours_contract } : {}),
+    expression: formData.expression,
+    target: typeof formData.target === 'number' ? formData.target : 0,
+    weight: typeof formData.weight === 'number' ? formData.weight : 0,
+  };
+}
+
+// Swap the count under edit (or append the new draft) into the full preference
+// list so detection sees leave requests alongside the live draft. The draft's
+// shift-count sublist index is preserved (same position when editing; appended
+// at the end when adding).
+function withDraftShiftCount(
+  preferences: Preference[],
+  editingIndex: number | null,
+  draft: ShiftCountPreference
+): Preference[] {
+  if (editingIndex === null) {
+    return [...preferences, draft];
+  }
+  let shiftCountIndex = -1;
+  return preferences.map(pref => {
+    if (pref.type !== SHIFT_COUNT) {
+      return pref;
+    }
+    shiftCountIndex += 1;
+    return shiftCountIndex === editingIndex ? draft : pref;
+  });
 }
 
 interface ShiftCountErrors {
@@ -73,6 +195,7 @@ export default function ShiftCountsPage() {
     getPreferencesByType,
     updatePreferencesByType,
     duplicatePreferenceByType,
+    preferences,
     shiftTypeData,
     peopleData,
     dateData
@@ -92,13 +215,70 @@ export default function ShiftCountsPage() {
     count_dates: [],
     count_shift_types: [],
     count_shift_type_coefficients: [],
+    hours_contract: undefined,
     expression: 'x >= T',
     target: 0,
     weight: -1
   });
   const [errors, setErrors] = useState<ShiftCountErrors>({});
+  // Set when a contract-unit switch is blocked because a value cannot convert to
+  // a whole number; the switch is not applied until the author reconciles.
+  const [unitConversionError, setUnitConversionError] = useState<string | null>(null);
+  // The coefficient editor's current unit while unmarked — only ever a starting
+  // guess for the mark-time declaration below, never an authoritative truth (an
+  // unmarked count persists no unit, so a reopened one has no real signal).
+  const [privateUnit, setPrivateUnit] = useState<HoursContractUnit>(HOURS_CONTRACT_UNITS[0]);
+  // True right after marking, until the author declares which unit the existing
+  // coefficients are already in. In this mode the unit selector is a declaration
+  // (no rescale); once declared, switching it converts. This keeps a wrong unit
+  // visible and user-owned instead of silently inheriting a stale guess.
+  const [isDeclaringUnit, setIsDeclaringUnit] = useState(false);
   useTabSwitchWarning(isFormVisible);
   const shiftTypeEntries = [...shiftTypeData.items, ...shiftTypeData.groups];
+  // Concrete shift-type ids (excludes groups and the reserved ALL), so the unit
+  // conversion can tell a real implicit-1 slot from a group/ALL cover slot.
+  const concreteShiftTypeIds = useMemo(
+    () => new Set(shiftTypeData.items.map(shiftType => shiftType.id)),
+    [shiftTypeData]
+  );
+
+  // The universes and group lists the uncredited-leave guard needs, built from
+  // the store fragments. Item universes exclude the reserved OFF/LEAVE/ALL
+  // states so `ALL` expands to worked shift types only (backend scheduler.py:91).
+  const allPreferences = useMemo(() => preferences ?? [], [preferences]);
+  const leaveWarningEnv = useMemo(() => ({
+    allPersonIds: peopleData.items
+      .map(person => person.id)
+      .filter(id => !isReservedKeyword(DataType.PEOPLE, id)),
+    allWorkedShiftTypeIds: shiftTypeData.items
+      .map(shiftType => shiftType.id)
+      .filter(id => !isReservedKeyword(DataType.SHIFT_TYPES, id)),
+    peopleGroups: peopleData.groups,
+    dateGroups: dateData.groups,
+    shiftTypeGroups: shiftTypeData.groups,
+    dateRange: dateData.range,
+  }), [peopleData, shiftTypeData, dateData]);
+
+  // List-card badges read the saved preferences: sublist index → warning.
+  const savedLeaveWarningsByIndex = useMemo(() => {
+    const warnings = findUncreditedLeaveWarnings({ preferences: allPreferences, ...leaveWarningEnv });
+    return new Map(warnings.map(warning => [warning.shiftCountListIndex, warning]));
+  }, [allPreferences, leaveWarningEnv]);
+
+  // The edit-form advisory reflects the live draft, so the fix clears it at once.
+  // Only marked counts can warn, so skip the work entirely for unmarked ones.
+  const editingLeaveWarning = useMemo(() => {
+    if (!isFormVisible || !formData.hours_contract) {
+      return undefined;
+    }
+    const draft = toDetectionShiftCount(formData);
+    const draftIndex = editingIndex ?? shiftCounts.length;
+    const warnings = findUncreditedLeaveWarnings({
+      preferences: withDraftShiftCount(allPreferences, editingIndex, draft),
+      ...leaveWarningEnv,
+    });
+    return warnings.find(warning => warning.shiftCountListIndex === draftIndex);
+  }, [isFormVisible, formData, editingIndex, allPreferences, leaveWarningEnv, shiftCounts.length]);
 
   const instructions = [
     "Set up shift count rules for people (e.g., \"Working shifts should be close to the average\")",
@@ -118,11 +298,15 @@ export default function ShiftCountsPage() {
       count_dates: [],
       count_shift_types: [],
       count_shift_type_coefficients: [],
+      hours_contract: undefined,
       expression: 'x >= T',
       target: 0,
       weight: -1
     });
     setErrors({});
+    setUnitConversionError(null);
+    setPrivateUnit(HOURS_CONTRACT_UNITS[0]);
+    setIsDeclaringUnit(false);
     setEditingIndex(null);
   };
 
@@ -143,6 +327,7 @@ export default function ShiftCountsPage() {
         shiftCount.countShiftTypeCoefficients ?? [],
         shiftTypeData
       ),
+      hours_contract: shiftCount.hoursContract,
       expression: shiftCount.expression,
       target: shiftCount.target,
       weight: shiftCount.weight
@@ -150,6 +335,14 @@ export default function ShiftCountsPage() {
     setEditingIndex(index);
     setIsFormVisible(true);
     setErrors({});
+    setUnitConversionError(null);
+    // A saved marked count already carries a persisted, declared unit — trust it
+    // (no re-declaration). Switching it later converts.
+    setIsDeclaringUnit(false);
+    // Keep the private toggle in step with how the coefficients are stored so an
+    // unmark never changes their meaning: a marked count's coefficients are in
+    // its contract unit; an unmarked count defaults to the base unit.
+    setPrivateUnit(shiftCount.hoursContract?.unit ?? HOURS_CONTRACT_UNITS[0]);
     // Save current scroll position and scroll to top
     saveScrollPosition();
     window.scrollTo({ top: 0, behavior: 'instant' });
@@ -231,6 +424,7 @@ export default function ShiftCountsPage() {
       // updatePreferencesByType normalizes this and countShiftTypeCoefficients to canonical entry order.
       countShiftTypes: formData.count_shift_types,
       ...(countShiftTypeCoefficients.length > 0 ? { countShiftTypeCoefficients } : {}),
+      ...(formData.hours_contract ? { hoursContract: formData.hours_contract } : {}),
       expression: formData.expression,
       target: formData.target as number,
       weight: formData.weight as number
@@ -238,6 +432,11 @@ export default function ShiftCountsPage() {
   };
 
   function saveDraft() {
+    // A just-marked count must have its contract unit explicitly confirmed before
+    // it can persist — otherwise the prefilled guess (possibly wrong for a
+    // reopened unmarked count) would be saved with no author decision. Gates the
+    // Save button AND the Enter-key path.
+    if (isDeclaringUnit) return;
     if (!validateForm()) return;
 
     const newShiftCount = buildShiftCountFromForm();
@@ -344,6 +543,98 @@ export default function ShiftCountsPage() {
         count_shift_type_coefficients_by_id: nextCoefficientErrors
       };
     });
+  };
+
+  const handleToggleHoursContract = () => {
+    setUnitConversionError(null);
+    if (formData.hours_contract) {
+      // Unmark: drop the metadata but keep the private toggle on the contract's
+      // unit, so the coefficients (stored in that unit) don't silently change
+      // meaning; the toggle governs the unit again for this now-unmarked count.
+      setPrivateUnit(formData.hours_contract.unit);
+      setIsDeclaringUnit(false);
+      setFormData(prev => ({ ...prev, hours_contract: undefined }));
+      return;
+    }
+    // Mark: enter declaration mode. Pre-fill the session's best-guess unit, but
+    // it is NOT authoritative (a reopened unmarked count has no real signal) —
+    // the author confirms/declares which unit the existing coefficients are in,
+    // with the LEAVE-credit preview making a wrong pick immediately visible.
+    setIsDeclaringUnit(true);
+    setFormData(prev => ({ ...prev, hours_contract: { unit: privateUnit } }));
+  };
+
+  const handleSelectContractUnit = (nextUnit: HoursContractUnit) => {
+    const currentUnit = formData.hours_contract?.unit;
+    if (!currentUnit) return;
+
+    // Declaration: while confirming the mark-time unit, picking a unit states
+    // which unit the existing coefficients are already in — no rescale, so a
+    // correction (e.g. hour-authored values wrongly pre-filled as half-hour)
+    // never corrupts them.
+    if (isDeclaringUnit) {
+      setIsDeclaringUnit(false);
+      setUnitConversionError(null);
+      setPrivateUnit(nextUnit);
+      if (nextUnit !== currentUnit) {
+        setFormData(prev => ({ ...prev, hours_contract: { unit: nextUnit } }));
+      }
+      return;
+    }
+
+    if (currentUnit === nextUnit) return;
+
+    // Conversion: re-express the same hours in the new unit. If any value cannot
+    // land on a whole number (or a blank concrete slot's implicit 1 cannot), block
+    // and keep the count in its current unit — never a mixed-unit intermediate.
+    const conversion = convertCountToUnit(
+      formData.count_shift_type_coefficients,
+      formData.target,
+      currentUnit,
+      nextUnit,
+      concreteShiftTypeIds
+    );
+    if (!conversion.ok) {
+      setUnitConversionError(
+        `Cannot switch to ${nextUnit}: ${conversion.blocked.join(', ')} do not convert to a whole number in ${nextUnit} units. Adjust them first.`
+      );
+      return;
+    }
+
+    setUnitConversionError(null);
+    setPrivateUnit(nextUnit);
+    setErrors(prev => ({ ...prev, target: '', count_shift_type_coefficients: '', count_shift_type_coefficients_by_id: {} }));
+    setFormData(prev => ({
+      ...prev,
+      hours_contract: { unit: nextUnit },
+      count_shift_type_coefficients: conversion.coefficients,
+      target: conversion.target,
+    }));
+  };
+
+  // Guard fix: credit LEAVE in the count's own (read-only) contract unit. Adds
+  // LEAVE to the counted shift types and upserts its coefficient, preserving
+  // every existing pair (guard-tech-plan "The fix"; D6). The advisory clears on
+  // the next render because LEAVE is now present.
+  const handleAddLeaveCredit = () => {
+    const unit = formData.hours_contract?.unit;
+    if (!unit) return;
+    // The credit amount depends on the contract unit; don't act on an
+    // unconfirmed declaration (the advisory is hidden in that state too).
+    if (isDeclaringUnit) return;
+    const coefficient = getLeaveCreditCoefficient(unit);
+    clearCoefficientError(LEAVE);
+    setFormData(prev => ({
+      ...prev,
+      count_shift_types: prev.count_shift_types.includes(LEAVE)
+        ? prev.count_shift_types
+        : [...prev.count_shift_types, LEAVE],
+      count_shift_type_coefficients: upsertCoefficientPair(
+        prev.count_shift_type_coefficients,
+        LEAVE,
+        coefficient
+      ),
+    }));
   };
 
   return (
@@ -526,6 +817,56 @@ export default function ShiftCountsPage() {
                 )}
               </div>
 
+              {/* Hours contract */}
+              <div>
+                <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={!!formData.hours_contract}
+                    onChange={handleToggleHoursContract}
+                    className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  This count enforces contracted monthly hours
+                </label>
+                {formData.hours_contract && (
+                  <div className="mt-3">
+                    <span className="block text-xs font-medium text-gray-600 mb-1">
+                      {isDeclaringUnit ? 'Which unit are these coefficients already in?' : 'Contract unit'}
+                    </span>
+                    <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden" role="group" aria-label="Contract unit">
+                      {HOURS_CONTRACT_UNITS.map(unit => (
+                        <button
+                          key={unit}
+                          type="button"
+                          onClick={() => handleSelectContractUnit(unit)}
+                          className={`px-3 py-1.5 text-sm transition-colors ${
+                            formData.hours_contract?.unit === unit
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-white text-gray-700 hover:bg-gray-50'
+                          }`}
+                        >
+                          {unit}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-xs font-medium text-gray-700">
+                      LEAVE will count {LEAVE_CREDIT_MINUTES / 60}h = {getLeaveCreditCoefficient(formData.hours_contract.unit)} {formData.hours_contract.unit} units
+                    </p>
+                    <p className="mt-1 text-xs text-gray-500 italic">
+                      {isDeclaringUnit
+                        ? 'Confirm the unit your coefficients are already in — the values are not changed.'
+                        : 'This unit governs every coefficient on the count. Switching it converts the coefficients and target together.'}
+                    </p>
+                    {unitConversionError && (
+                      <p className="mt-2 text-sm text-amber-700 flex items-center gap-1">
+                        <FiAlertCircle className="h-4 w-4" />
+                        {unitConversionError}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
               <div>
                 <CountShiftTypeCoefficientFields
                   selectedShiftTypeIds={formData.count_shift_types}
@@ -534,6 +875,10 @@ export default function ShiftCountsPage() {
                   shiftTypeData={shiftTypeData}
                   errorsById={errors.count_shift_type_coefficients_by_id}
                   enableDurationAutofill
+                  autofillDisabled={isDeclaringUnit}
+                  controlledUnit={formData.hours_contract?.unit}
+                  privateUnit={privateUnit}
+                  onPrivateUnitChange={setPrivateUnit}
                   onChange={(coefficients, changedShiftTypeId) => {
                     clearCoefficientError(changedShiftTypeId);
                     setFormData(prev => ({
@@ -553,6 +898,18 @@ export default function ShiftCountsPage() {
                   </div>
                 )}
               </div>
+
+              {/* Uncredited-leave advisory: amber, non-blocking — never gates save.
+                  Withheld while the unit is still being declared, since the credit
+                  amount depends on the (unconfirmed) contract unit. */}
+              {editingLeaveWarning && formData.hours_contract && !isDeclaringUnit && (
+                <LeaveCreditAdvisory
+                  affectedPeople={editingLeaveWarning.affectedPeople}
+                  unit={formData.hours_contract.unit}
+                  coefficient={getLeaveCreditCoefficient(formData.hours_contract.unit)}
+                  onAddLeave={handleAddLeaveCredit}
+                />
+              )}
 
               {/* Expression and Target */}
               <div className="flex gap-4">
@@ -635,7 +992,14 @@ export default function ShiftCountsPage() {
 
               {/* Action Buttons */}
               <div className="flex flex-col gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between">
-                <div />
+                <div>
+                  {isDeclaringUnit && (
+                    <p className="text-sm text-amber-700 flex items-center gap-1">
+                      <FiAlertCircle className="h-4 w-4" />
+                      Confirm the coefficient unit to continue.
+                    </p>
+                  )}
+                </div>
                 <div className="flex flex-wrap justify-end gap-3">
                   <button
                     onClick={handleCancel}
@@ -645,7 +1009,12 @@ export default function ShiftCountsPage() {
                   </button>
                   <button
                     onClick={handleSave}
-                    className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+                    disabled={isDeclaringUnit}
+                    className={`px-6 py-2 rounded-md transition-colors ${
+                      isDeclaringUnit
+                        ? 'bg-blue-300 text-white cursor-not-allowed'
+                        : 'bg-blue-600 text-white hover:bg-blue-700'
+                    }`}
                   >
                     {editingIndex !== null ? 'Update' : 'Add'}
                   </button>
@@ -665,8 +1034,13 @@ export default function ShiftCountsPage() {
         onDuplicate={handleDuplicate}
         onDelete={handleDelete}
         onReorder={handleReorder}
-        renderContent={(shiftCount) => (
+        renderContent={(shiftCount, index) => (
           <>
+            {savedLeaveWarningsByIndex.has(index) && (
+              <div className="mb-3">
+                <LeaveCreditBadge />
+              </div>
+            )}
             {shiftCount.description && (
               <h4 className="font-medium text-gray-900 mb-3">{shiftCount.description}</h4>
             )}

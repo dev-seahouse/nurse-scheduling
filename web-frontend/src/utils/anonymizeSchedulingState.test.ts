@@ -109,6 +109,34 @@ describe('anonymizeSchedulingState', () => {
     expect(result.export?.extraRows?.[0]).toMatchObject({ countPeople: ['ALL', 'Bob', 'G1'] });
   });
 
+  it('preserves shift-count hoursContract metadata while anonymizing people', () => {
+    const contractState: SchedulingState = {
+      ...state,
+      preferences: [
+        {
+          type: 'shift count',
+          person: ['Alice', 'Team'],
+          countDates: ['ALL'],
+          countShiftTypes: ['D'],
+          expression: 'x >= T',
+          target: 1,
+          weight: 4,
+          hoursContract: { unit: 'half-hour' },
+        },
+      ],
+    };
+
+    const result = anonymizeSchedulingState(contractState, {
+      anonymizePeopleItems: true,
+      anonymizePeopleGroups: false,
+    });
+
+    expect(result.preferences[0]).toMatchObject({
+      person: ['P1', 'Team'],
+      hoursContract: { unit: 'half-hour' },
+    });
+  });
+
   it('returns a reverse mapping for restoring anonymized IDs', () => {
     const result = anonymizeSchedulingStateWithMapping(state, {
       anonymizePeopleItems: true,

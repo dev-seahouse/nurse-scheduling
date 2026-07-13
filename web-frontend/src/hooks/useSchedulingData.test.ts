@@ -3701,6 +3701,137 @@ describe('useSchedulingData', () => {
     });
   });
 
+  describe('shift-count hoursContract import validation', () => {
+    const loadCountWithHoursContract = (
+      result: { current: ReturnType<typeof useSchedulingData> },
+      hoursContract: unknown,
+    ) => {
+      act(() => {
+        result.current.loadFromYaml({
+          apiVersion: 'alpha',
+          dates: {
+            range: { startDate: '2026-04-01', endDate: '2026-04-01' },
+            items: [{ id: '01', description: '' }],
+            groups: [],
+          },
+          people: {
+            items: [{ id: 'P1', description: '', history: [] }],
+            groups: [],
+          },
+          shiftTypes: {
+            items: [{ id: 'D', description: '' }],
+            groups: [],
+          },
+          preferences: [
+            {
+              type: SHIFT_COUNT,
+              person: ['P1'],
+              countDates: ['01'],
+              countShiftTypes: ['D'],
+              expression: 'x >= T',
+              target: 1,
+              weight: 1,
+              hoursContract,
+            },
+          ],
+          export: { formatting: [] },
+        });
+      });
+    };
+
+    const getCount = (result: { current: ReturnType<typeof useSchedulingData> }) =>
+      result.current.preferences.find(pref => pref.type === SHIFT_COUNT) as
+        | { hoursContract?: { unit: string } }
+        | undefined;
+
+    it('keeps a valid hoursContract and surfaces no warning', async () => {
+      const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+
+      loadCountWithHoursContract(result, { unit: 'hour' });
+
+      await waitFor(() => {
+        expect(getCount(result)?.hoursContract).toEqual({ unit: 'hour' });
+        expect(result.current.yamlImportWarnings).toEqual([]);
+      });
+    });
+
+    it('drops an empty hoursContract and warns', async () => {
+      const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+
+      loadCountWithHoursContract(result, {});
+
+      await waitFor(() => {
+        expect(getCount(result)?.hoursContract).toBeUndefined();
+        expect(result.current.yamlImportWarnings).toEqual([
+          expect.stringContaining('preferences[0].hoursContract'),
+        ]);
+      });
+    });
+
+    it('drops an unknown-unit hoursContract and warns', async () => {
+      const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+
+      loadCountWithHoursContract(result, { unit: 'minutes' });
+
+      await waitFor(() => {
+        expect(getCount(result)?.hoursContract).toBeUndefined();
+        expect(result.current.yamlImportWarnings).toEqual([
+          expect.stringContaining('preferences[0].hoursContract'),
+        ]);
+      });
+    });
+
+    it('drops an extra-key hoursContract and warns', async () => {
+      const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+
+      loadCountWithHoursContract(result, { unit: 'hour', extra: 1 });
+
+      await waitFor(() => {
+        expect(getCount(result)?.hoursContract).toBeUndefined();
+        expect(result.current.yamlImportWarnings).toEqual([
+          expect.stringContaining('preferences[0].hoursContract'),
+        ]);
+      });
+    });
+
+    it('preserves a valid hoursContract through localStorage and undo/redo', async () => {
+      const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+
+      loadCountWithHoursContract(result, { unit: 'half-hour' });
+
+      await waitFor(() => {
+        expect(getCount(result)?.hoursContract).toEqual({ unit: 'half-hour' });
+      });
+
+      const stored = localStorage.getItem(STORAGE_KEY);
+      expect(stored).toContain('hoursContract');
+
+      // Replace with a config that has no hours contract, then undo back to it.
+      act(() => {
+        result.current.loadFromYaml({
+          apiVersion: 'alpha',
+          dates: { range: { startDate: '2026-04-01', endDate: '2026-04-01' }, items: [{ id: '01', description: '' }], groups: [] },
+          people: { items: [{ id: 'P1', description: '', history: [] }], groups: [] },
+          shiftTypes: { items: [{ id: 'D', description: '' }], groups: [] },
+          preferences: [],
+          export: { formatting: [] },
+        });
+      });
+
+      await waitFor(() => {
+        expect(getCount(result)).toBeUndefined();
+      });
+
+      act(() => {
+        result.current.undo();
+      });
+
+      await waitFor(() => {
+        expect(getCount(result)?.hoursContract).toEqual({ unit: 'half-hour' });
+      });
+    });
+  });
+
   it('preserves nested YAML reference syntax and still updates nested references on rename', async () => {
     const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
 
