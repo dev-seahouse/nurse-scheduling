@@ -44,9 +44,7 @@ export default defineConfig({
   webServer: {
     command: `bun run build:e2e && bunx serve@latest out -l ${e2ePort}`,
     env: {
-      DISABLE_SENTRY: '1',
       E2E_COVERAGE: process.env.E2E_COVERAGE ?? '0',
-      NEXT_PUBLIC_DISABLE_SENTRY: '1',
       NEXT_PUBLIC_DISABLE_HOSTED_OPTIMIZE_API: '1',
     },
     url: e2eBaseURL,

@@ -36,6 +36,7 @@ function ItemGroupEditorHarness({
   instructions = [],
   extraButtons,
   children,
+  dataType = DataType.PEOPLE,
 }: {
   initialData?: ItemGroupEditorPageData;
   itemsReadOnly?: boolean;
@@ -43,6 +44,7 @@ function ItemGroupEditorHarness({
   instructions?: string[];
   extraButtons?: ReactNode;
   children?: ReactNode;
+  dataType?: DataType;
 }) {
   const [mode, setMode] = useState(Mode.NORMAL);
   const [data, setData] = useState<ItemGroupEditorPageData>({
@@ -53,10 +55,13 @@ function ItemGroupEditorHarness({
     }),
   });
 
-  const addItem = (_dataType: DataType, prev: ItemGroupEditorPageData, id: string, groupIds: string[], description?: string) => {
+  const addItem = (_dataType: DataType, prev: ItemGroupEditorPageData, id: string, groupIds: string[], description?: string, workingTime?: Partial<Item>) => {
+    const baseItem = _dataType === DataType.SHIFT_TYPES
+      ? { id, description: description || '', ...(workingTime ?? {}) }
+      : { id, description: description || '', history: [] };
     setData({
       ...prev,
-      items: [...prev.items, { id, description: description || '', history: [] }],
+      items: [...prev.items, baseItem],
       groups: prev.groups.map(group =>
         groupIds.includes(group.id) ? { ...group, members: [...group.members, id] } : group,
       ),
@@ -116,9 +121,18 @@ function ItemGroupEditorHarness({
     });
   };
 
-  const updateItem = (_dataType: DataType, prev: ItemGroupEditorPageData, oldId: string, newId: string, groupIds?: string[], description?: string) => {
+  const updateItem = (_dataType: DataType, prev: ItemGroupEditorPageData, oldId: string, newId: string, groupIds?: string[], description?: string, workingTime?: Partial<Item>) => {
     const updatedItems = prev.items.map(item =>
-      item.id === oldId ? { ...item, id: newId, description: description ?? item.description } : item,
+      item.id === oldId
+        ? {
+            ...item,
+            id: newId,
+            description: description ?? item.description,
+            ...(_dataType === DataType.SHIFT_TYPES && workingTime !== undefined
+              ? { durationMinutes: undefined, startTime: undefined, endTime: undefined, restMinutes: undefined, ...workingTime }
+              : {}),
+          }
+        : item,
     );
 
     const updatedGroups = prev.groups.map(group => {
@@ -182,7 +196,7 @@ function ItemGroupEditorHarness({
         title="People"
         instructions={instructions}
         data={data}
-        dataType={DataType.PEOPLE}
+        dataType={dataType}
         mode={mode}
         setMode={setMode}
         itemsReadOnly={itemsReadOnly}
@@ -1032,4 +1046,85 @@ describe('ItemGroupEditorPage', () => {
     expect(screen.queryByTitle('Group 1')).not.toBeInTheDocument();
     expect(screen.getAllByTitle('Remove "Group X"')).toHaveLength(2);
   });
+});
+
+describe('ItemGroupEditorPage shift-type working time (WT4)', () => {
+  it('authors time-in/out + rest, shows derived paid hours, and hydrates on reopen', async () => {
+    const user = userEvent.setup();
+
+    render(<ItemGroupEditorHarness dataType={DataType.SHIFT_TYPES} initialData={{ items: [], groups: [] }} />);
+
+    await user.click(screen.getByRole('button', { name: /add shift type/i }));
+    await user.type(screen.getByPlaceholderText('Enter shift type ID'), 'D');
+    // 08:00 → 16:00 span 480, rest 20 → 460 paid = 7h 40m (off-grid).
+    fireEvent.change(screen.getByLabelText('Start time'), { target: { value: '08:00' } });
+    fireEvent.change(screen.getByLabelText('End time'), { target: { value: '16:00' } });
+    fireEvent.change(screen.getByLabelText('Rest minutes'), { target: { value: '20' } });
+
+    expect(screen.getByText('Working time: 7h 40m')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(screen.getByText('1. D')).toBeInTheDocument();
+
+    // Reopen the edit form: the durable times hydrate and the derived hours show.
+    const row = screen.getByText('1. D').closest('tr') as HTMLTableRowElement;
+    await user.click(within(row).getByRole('button', { name: /edit/i }));
+
+    expect(screen.getByLabelText('Start time')).toHaveValue('08:00');
+    expect(screen.getByLabelText('End time')).toHaveValue('16:00');
+    expect(screen.getByLabelText('Rest minutes')).toHaveValue(20);
+    expect(screen.getByText('Working time: 7h 40m')).toBeInTheDocument();
+  }, 15000);
+
+  it('derives an overnight shift across midnight', async () => {
+    const user = userEvent.setup();
+
+    render(<ItemGroupEditorHarness dataType={DataType.SHIFT_TYPES} initialData={{ items: [], groups: [] }} />);
+
+    await user.click(screen.getByRole('button', { name: /add shift type/i }));
+    await user.type(screen.getByPlaceholderText('Enter shift type ID'), 'N');
+    // 22:00 → 06:00 span 480, rest 60 → 420 paid = 7h.
+    fireEvent.change(screen.getByLabelText('Start time'), { target: { value: '22:00' } });
+    fireEvent.change(screen.getByLabelText('End time'), { target: { value: '06:00' } });
+    fireEvent.change(screen.getByLabelText('Rest hours'), { target: { value: '1' } });
+
+    expect(screen.getByText('Working time: 7h')).toBeInTheDocument();
+  }, 15000);
+
+  it('shows an inline error and blocks save when rest is not less than the span', async () => {
+    const user = userEvent.setup();
+
+    render(<ItemGroupEditorHarness dataType={DataType.SHIFT_TYPES} initialData={{ items: [], groups: [] }} />);
+
+    await user.click(screen.getByRole('button', { name: /add shift type/i }));
+    await user.type(screen.getByPlaceholderText('Enter shift type ID'), 'X');
+    // 08:00 → 12:00 span 240, rest 5h (300) ≥ span → invalid.
+    fireEvent.change(screen.getByLabelText('Start time'), { target: { value: '08:00' } });
+    fireEvent.change(screen.getByLabelText('End time'), { target: { value: '12:00' } });
+    fireEvent.change(screen.getByLabelText('Rest hours'), { target: { value: '5' } });
+
+    expect(screen.getByText(/rest must be less than the shift length/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Add' }));
+
+    // Save blocked: no row created and the form stays open.
+    expect(screen.queryByText('1. X')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Start time')).toBeInTheDocument();
+  }, 15000);
+
+  it('treats a shift type with no working time as before (no derived hours shown)', async () => {
+    const user = userEvent.setup();
+
+    render(<ItemGroupEditorHarness dataType={DataType.SHIFT_TYPES} initialData={{ items: [], groups: [] }} />);
+
+    await user.click(screen.getByRole('button', { name: /add shift type/i }));
+    await user.type(screen.getByPlaceholderText('Enter shift type ID'), 'A');
+
+    expect(screen.queryByText(/^Working time:/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(screen.getByText('1. A')).toBeInTheDocument();
+  }, 15000);
 });

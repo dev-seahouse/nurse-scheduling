@@ -62,4 +62,20 @@ describe('yamlGenerator', () => {
 
     expect(parsed.preferences[0].hoursContract).toEqual({ unit: 'half-hour' });
   });
+
+  it('round-trips durable shift-type working-time fields through YAML', () => {
+    const shiftType = {
+      id: 'D',
+      description: 'Day',
+      startTime: '08:00',
+      endTime: '20:30',
+      restMinutes: 60,
+      durationMinutes: 690,
+    };
+
+    const serialized = generateYamlFromState({ shiftTypes: { items: [shiftType], groups: [] } });
+    const parsed = yaml.load(serialized) as { shiftTypes: { items: (typeof shiftType)[] } };
+
+    expect(parsed.shiftTypes.items[0]).toEqual(shiftType);
+  });
 });

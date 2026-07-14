@@ -1115,6 +1115,141 @@ describe('useSchedulingData', () => {
     });
   });
 
+  it('round-trips durable shift-type working-time fields through import, localStorage, and reload', async () => {
+    const { result, unmount } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+
+    act(() => {
+      result.current.loadFromYaml({
+        apiVersion: 'alpha',
+        shiftTypes: {
+          items: [
+            { id: 'D', description: 'Day', startTime: '08:00', endTime: '20:30', restMinutes: 60, durationMinutes: 690 },
+          ],
+          groups: [],
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.shiftTypeData.items).toEqual(
+        expect.arrayContaining([
+          { id: 'D', description: 'Day', startTime: '08:00', endTime: '20:30', restMinutes: 60, durationMinutes: 690 },
+        ]),
+      );
+    });
+
+    const storedRaw = localStorage.getItem(STORAGE_KEY);
+    expect(storedRaw).toContain('startTime');
+    expect(storedRaw).toContain('restMinutes');
+
+    unmount();
+
+    const { result: reloadedResult } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+    await waitFor(() => {
+      expect(reloadedResult.current.shiftTypeData.items).toEqual(
+        expect.arrayContaining([
+          { id: 'D', description: 'Day', startTime: '08:00', endTime: '20:30', restMinutes: 60, durationMinutes: 690 },
+        ]),
+      );
+    });
+  });
+
+  it('addItem persists durable shift-type working-time fields and reloads them', async () => {
+    const { result, unmount } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+
+    act(() => {
+      result.current.addItem(DataType.SHIFT_TYPES, result.current.shiftTypeData, 'WT', [], 'Worked', {
+        durationMinutes: 460,
+        startTime: '08:00',
+        endTime: '16:00',
+        restMinutes: 20,
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.shiftTypeData.items).toEqual(
+        expect.arrayContaining([
+          { id: 'WT', description: 'Worked', durationMinutes: 460, startTime: '08:00', endTime: '16:00', restMinutes: 20 },
+        ]),
+      );
+    });
+
+    unmount();
+
+    const { result: reloaded } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+    await waitFor(() => {
+      expect(reloaded.current.shiftTypeData.items).toEqual(
+        expect.arrayContaining([
+          { id: 'WT', description: 'Worked', durationMinutes: 460, startTime: '08:00', endTime: '16:00', restMinutes: 20 },
+        ]),
+      );
+    });
+  });
+
+  it('updateItem preserves durable working-time fields on an ID/description-only edit', async () => {
+    const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+
+    act(() => {
+      result.current.addItem(DataType.SHIFT_TYPES, result.current.shiftTypeData, 'WT', [], 'Worked', {
+        durationMinutes: 690,
+        startTime: '08:00',
+        endTime: '20:30',
+        restMinutes: 60,
+      });
+    });
+
+    // No working-time payload → the four durable fields survive untouched.
+    act(() => {
+      result.current.updateItem(DataType.SHIFT_TYPES, result.current.shiftTypeData, 'WT', 'WTX', undefined, 'Worked (renamed)');
+    });
+
+    await waitFor(() => {
+      expect(result.current.shiftTypeData.items).toEqual(
+        expect.arrayContaining([
+          { id: 'WTX', description: 'Worked (renamed)', durationMinutes: 690, startTime: '08:00', endTime: '20:30', restMinutes: 60 },
+        ]),
+      );
+    });
+  });
+
+  it('updateItem replaces working-time fields when given a payload and clears them with an empty payload', async () => {
+    const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+
+    act(() => {
+      result.current.addItem(DataType.SHIFT_TYPES, result.current.shiftTypeData, 'WT', [], 'Worked', {
+        durationMinutes: 690,
+        startTime: '08:00',
+        endTime: '20:30',
+        restMinutes: 60,
+      });
+    });
+
+    // A new payload with no rest overwrites all four fields (restMinutes cleared).
+    act(() => {
+      result.current.updateItem(DataType.SHIFT_TYPES, result.current.shiftTypeData, 'WT', 'WT', undefined, undefined, {
+        durationMinutes: 480,
+        startTime: '09:00',
+        endTime: '17:00',
+        restMinutes: undefined,
+      });
+    });
+
+    await waitFor(() => {
+      const item = result.current.shiftTypeData.items.find(shiftType => shiftType.id === 'WT');
+      expect(item).toEqual({ id: 'WT', description: 'Worked', durationMinutes: 480, startTime: '09:00', endTime: '17:00' });
+    });
+
+    // An empty payload clears every durable working-time field.
+    act(() => {
+      result.current.updateItem(DataType.SHIFT_TYPES, result.current.shiftTypeData, 'WT', 'WT', undefined, undefined, {});
+    });
+
+    await waitFor(() => {
+      const item = result.current.shiftTypeData.items.find(shiftType => shiftType.id === 'WT');
+      expect(item).toEqual({ id: 'WT', description: 'Worked' });
+    });
+  });
+
   it('sorts SHIFT_REQUEST preferences and date arrays in updatePreferencesByType', async () => {
     const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
 

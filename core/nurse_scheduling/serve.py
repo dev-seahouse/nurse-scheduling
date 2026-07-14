@@ -29,8 +29,7 @@ from typing import Any
 from uuid import uuid4, UUID
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request, Response
-from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
-from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -64,7 +63,6 @@ from .solver_interface import (
     serialize_schedule_phase_progress,
     serialize_solver_progress,
 )
-from .sentry import capture_invalid_request, capture_optimize_exception, init_sentry
 
 
 def _get_app_version() -> str:
@@ -92,8 +90,6 @@ def _get_app_version() -> str:
 app_version = _get_app_version()
 
 
-init_sentry(app_version)
-
 # Keep API output focused on server behavior. Solver progress is delivered to
 # clients through job events and remains available from the CLI's verbose logs.
 logging.basicConfig(
@@ -119,17 +115,8 @@ app = FastAPI(title=title, version=version, lifespan=lifespan)
 # Ref: https://fastapi.tiangolo.com/tutorial/handling-errors/#override-request-validation-exceptions
 
 
-@app.exception_handler(RequestValidationError)
-async def sentry_request_validation_exception_handler(
-    request: Request,
-    exc: RequestValidationError,
-):
-    capture_invalid_request(request, 422, exc.errors())
-    return await request_validation_exception_handler(request, exc)
-
-
 @app.exception_handler(StarletteHTTPException)
-async def sentry_http_exception_handler(
+async def http_error_handler(
     request: Request,
     exc: StarletteHTTPException,
 ):
@@ -140,8 +127,6 @@ async def sentry_http_exception_handler(
         detail = "Scheduling YAML is too large"
         exc = StarletteHTTPException(status_code=status_code, detail=detail)
 
-    if 400 <= status_code < 500:
-        capture_invalid_request(request, status_code, detail)
     return await http_exception_handler(request, exc)
 
 
@@ -339,7 +324,6 @@ def _run_optimize_job(job_id: str, content: bytes) -> None:
         _refresh_queue_positions()
         _log_job_completed(job)
     except Exception as e:
-        capture_optimize_exception(job, content, e)
         job = _finish_optimize_job_if_present(
             job_id,
             "error",

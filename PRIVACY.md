@@ -10,15 +10,11 @@ This project is in early development. Its basic privacy protections primarily an
 
 Scheduling data and up to 50 undo-history entries are stored in browser `localStorage` until cleared or replaced.
 
-## Analytics and Error Reporting
+## Analytics
 
-The hosted frontend uses Google Analytics and Sentry for analytics, diagnostics, performance monitoring, feedback, and error reporting. Depending on the event, they may receive IP addresses, request headers, interaction metadata, logs, feedback contact details, and scheduling data.
+The hosted frontend uses Google Analytics. Depending on the event, it may receive IP addresses, request headers, and interaction metadata.
 
-- Sentry Session Replay samples video-like page interactions. Its current defaults mask text and input values and block media before transmission, but replay events and technical metadata are still sent.
-- Feedback screenshots are optional and user-initiated. They are not automatically fully anonymized; users can redact sensitive areas with Sentry's **Hide** tool before submission.
-- On frontend or backend errors, the current scheduling YAML may be attached to Sentry. Individual people IDs are anonymized and descriptions are removed where possible, but other sensitive information may remain. If backend anonymization fails, the original YAML may be attached.
-
-Data received by Google Analytics and Sentry is subject to their policies and retention settings.
+Data received by Google Analytics is subject to its policies and retention settings.
 
 ## Optimization Backend
 
@@ -31,14 +27,12 @@ Clicking **Optimize** sends the current scheduling YAML to the backend shown in 
 
 ## Opting Out While Using Hosted Services
 
-Ad blockers and privacy-focused browser extensions may block Google Analytics and Sentry, depending on their configuration. They do not prevent scheduling data from being sent to the configured backend when you click **Optimize**.
+Ad blockers and privacy-focused browser extensions may block Google Analytics, depending on their configuration. They do not prevent scheduling data from being sent to the configured backend when you click **Optimize**.
 
 ## Self-Hosting
 
 For stronger control, run the frontend and backend locally or on infrastructure you control:
 
-- Disable frontend Sentry with `NEXT_PUBLIC_DISABLE_SENTRY=1`.
-- Disable frontend server-side and backend Sentry with `DISABLE_SENTRY=1`.
 - Disable the hosted optimization API with `NEXT_PUBLIC_DISABLE_HOSTED_OPTIMIZE_API=1`.
 - Remove or disable Google Analytics before deploying a private frontend.
 

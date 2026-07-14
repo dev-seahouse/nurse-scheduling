@@ -68,9 +68,19 @@ class ShiftType(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: int | str
     description: str | None = None
-    # Authoring-only shift duration (Option B). Feeds the frontend
-    # "auto-fill coefficients from durations" helper; ignored by the solver.
+    # Authoring-only shift duration (Option B). Stores the *paid working
+    # minutes* and feeds the frontend "auto-fill coefficients from durations"
+    # helper; ignored by the solver.
     durationMinutes: int | None = None
+    # Durable, authoring-only working-time fields (WT1). `startTime`/`endTime`
+    # are "HH:MM" clock times and `restMinutes` is the unpaid break; together
+    # they let the frontend derive `durationMinutes` (paid working minutes) and
+    # stay editable on reopen. All optional — absent ⇒ legacy behavior. Ignored
+    # by the solver (mirrors `durationMinutes`); strictly typed so malformed
+    # values cannot slip through the extra="forbid" above.
+    startTime: Annotated[str, Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")] | None = None
+    endTime: Annotated[str, Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")] | None = None
+    restMinutes: int | None = None
 
 
 class ShiftTypeGroup(BaseModel):

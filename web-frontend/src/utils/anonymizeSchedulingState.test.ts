@@ -137,6 +137,30 @@ describe('anonymizeSchedulingState', () => {
     });
   });
 
+  it('preserves durable shift-type working-time fields while anonymizing people', () => {
+    const workingTimeState: SchedulingState = {
+      ...state,
+      shiftTypes: {
+        items: [{ id: 'D', description: 'Day', startTime: '08:00', endTime: '20:30', restMinutes: 60, durationMinutes: 690 }],
+        groups: [],
+      },
+    };
+
+    const result = anonymizeSchedulingState(workingTimeState, {
+      anonymizePeopleItems: true,
+      anonymizePeopleGroups: false,
+    });
+
+    expect(result.shiftTypes.items[0]).toEqual({
+      id: 'D',
+      description: 'Day',
+      startTime: '08:00',
+      endTime: '20:30',
+      restMinutes: 60,
+      durationMinutes: 690,
+    });
+  });
+
   it('returns a reverse mapping for restoring anonymized IDs', () => {
     const result = anonymizeSchedulingStateWithMapping(state, {
       anonymizePeopleItems: true,

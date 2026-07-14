@@ -178,6 +178,71 @@ describe('AddEditItemGroupForm', () => {
     expect(renderGroupMemberSelector).not.toHaveBeenCalled();
   });
 
+  it('renders shift-type working-time inputs with the derived summary and inline error', () => {
+    const { rerender } = render(
+      <AddEditItemGroupForm
+        mode={Mode.EDITING}
+        draft={{ id: 'D', description: 'Day', groups: [], members: [], isItem: true }}
+        items={[{ id: 'D', description: 'Day' }]}
+        groups={[]}
+        itemLabel="Shift Type"
+        itemLabelPlural="Shift Types"
+        error=""
+        filterItemGroups={(entries) => entries}
+        onIdChange={() => undefined}
+        onDescriptionChange={() => undefined}
+        onMemberToggle={() => undefined}
+        onSave={() => undefined}
+        onCancel={() => undefined}
+        showWorkingTimeField
+        startTimeValue="08:00"
+        endTimeValue="16:00"
+        restMinutesValue="20"
+        workingTimeSummary="7h 40m"
+        onStartTimeChange={() => undefined}
+        onEndTimeChange={() => undefined}
+        onRestHoursChange={() => undefined}
+        onRestMinutesChange={() => undefined}
+      />,
+    );
+
+    expect(screen.getByLabelText('Start time')).toHaveValue('08:00');
+    expect(screen.getByLabelText('End time')).toHaveValue('16:00');
+    expect(screen.getByLabelText('Rest minutes')).toHaveValue(20);
+    expect(screen.getByText('Working time: 7h 40m')).toBeInTheDocument();
+
+    // The inline error replaces the summary when present.
+    rerender(
+      <AddEditItemGroupForm
+        mode={Mode.EDITING}
+        draft={{ id: 'D', description: 'Day', groups: [], members: [], isItem: true }}
+        items={[{ id: 'D', description: 'Day' }]}
+        groups={[]}
+        itemLabel="Shift Type"
+        itemLabelPlural="Shift Types"
+        error=""
+        filterItemGroups={(entries) => entries}
+        onIdChange={() => undefined}
+        onDescriptionChange={() => undefined}
+        onMemberToggle={() => undefined}
+        onSave={() => undefined}
+        onCancel={() => undefined}
+        showWorkingTimeField
+        startTimeValue="08:00"
+        endTimeValue="12:00"
+        restHoursValue="5"
+        workingTimeError="Rest must be less than the shift length."
+        onStartTimeChange={() => undefined}
+        onEndTimeChange={() => undefined}
+        onRestHoursChange={() => undefined}
+        onRestMinutesChange={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText('Rest must be less than the shift length.')).toBeInTheDocument();
+    expect(screen.queryByText(/^Working time:/)).not.toBeInTheDocument();
+  });
+
   it('shows a setup hint when an item has no available groups', () => {
     render(
       <AddEditItemGroupForm

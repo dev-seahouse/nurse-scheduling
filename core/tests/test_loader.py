@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from nurse_scheduling.loader import _load_yaml, load_data
 
 
-SENTRY_MOJIBAKE_YAML = """\
+MOJIBAKE_YAML = """\
 嚜瘸piVersion: alpha
 description: ''
 dates:
@@ -88,9 +88,9 @@ def test_load_data_accepts_utf8_bom_api_version_key():
     assert data.apiVersion == "alpha"
 
 
-def test_load_data_rejects_sentry_mojibake_api_version_key():
+def test_load_data_rejects_mojibake_api_version_key():
     with pytest.raises(ValidationError, match="apiVersion"):
-        load_data(SENTRY_MOJIBAKE_YAML.encode("utf-8"))
+        load_data(MOJIBAKE_YAML.encode("utf-8"))
 
 
 @pytest.mark.parametrize(
