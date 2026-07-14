@@ -121,7 +121,7 @@ describe('anonymizeSchedulingState', () => {
           expression: 'x >= T',
           target: 1,
           weight: 4,
-          hoursContract: { unit: 'half-hour' },
+          hoursContract: { unit: 'half-hour', policy: 'exact' },
         },
       ],
     };
@@ -133,7 +133,47 @@ describe('anonymizeSchedulingState', () => {
 
     expect(result.preferences[0]).toMatchObject({
       person: ['P1', 'Team'],
-      hoursContract: { unit: 'half-hour' },
+      hoursContract: { unit: 'half-hour', policy: 'exact' },
+    });
+  });
+
+  it('preserves generic array and marked Range wire shapes while anonymizing people', () => {
+    const arrayState: SchedulingState = {
+      ...state,
+      preferences: [
+        {
+          type: 'shift count',
+          person: ['Alice'],
+          countDates: ['ALL'],
+          countShiftTypes: ['D'],
+          expression: ['x >= T', 'x <= T'],
+          target: [1, 3],
+          weight: 1,
+        },
+        {
+          type: 'shift count',
+          person: ['Alice'],
+          countDates: ['ALL'],
+          countShiftTypes: ['D'],
+          countShiftTypeCoefficients: [['D', 16]],
+          hoursContract: { unit: 'half-hour', policy: 'range' },
+          expression: ['x >= T', 'x <= T'],
+          target: [300, 340],
+          weight: 1,
+        },
+      ],
+    };
+
+    const result = anonymizeSchedulingState(arrayState, {
+      anonymizePeopleItems: true,
+      anonymizePeopleGroups: false,
+    });
+
+    expect(result.preferences[0]).toMatchObject({ expression: ['x >= T', 'x <= T'], target: [1, 3] });
+    expect(result.preferences[1]).toMatchObject({
+      expression: ['x >= T', 'x <= T'],
+      target: [300, 340],
+      hoursContract: { unit: 'half-hour', policy: 'range' },
     });
   });
 

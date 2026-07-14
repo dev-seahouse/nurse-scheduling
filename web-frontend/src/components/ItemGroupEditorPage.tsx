@@ -20,10 +20,11 @@
 // A component for managing a list of items and groups, and the relationships between them.
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import { FiHelpCircle } from 'react-icons/fi';
 import { DataTable } from '@/components/DataTable';
 import { AddEditItemGroupForm } from '@/components/AddEditItemGroupForm';
+import ShiftTypeWorkingTimeEditor from '@/components/ShiftTypeWorkingTimeEditor';
 import ToggleButton from '@/components/ToggleButton';
 import { useItemTableColumns, useGroupTableColumns } from '@/components/TableColumns';
 import { isReservedKeyword } from '@/utils/keywords';
@@ -31,7 +32,6 @@ import { ERROR_SHOULD_NOT_HAPPEN } from '@/constants/errors';
 import { Mode } from '@/constants/modes';
 import { Item, Group, DataType } from '@/types/scheduling';
 import type { ShiftTypeWorkingTime } from '@/hooks/useSchedulingData';
-import { deriveWorkingMinutes, formatWorkingMinutes } from '@/utils/shiftWorkingTime';
 import { saveScrollPosition, restoreScrollPosition } from '@/utils/scrolling';
 import { useTabSwitchWarning } from '@/utils/unsavedEditingState';
 import { isImeCompositionKeyEvent } from '@/utils/keyboardEvents';
@@ -52,14 +52,6 @@ const getLabels = (dataType: DataType) => {
 export interface ItemGroupEditorPageData {
   items: Item[];
   groups: Group[];
-}
-
-// Rest entered as hours + minutes (WT4, matching the h+min precedent) → minutes.
-// Blank parts count as 0; unparseable parts are treated as 0.
-function parseRestMinutes(restHours: string, restMins: string): number {
-  const hours = restHours.trim() === '' ? 0 : Number.parseInt(restHours, 10);
-  const mins = restMins.trim() === '' ? 0 : Number.parseInt(restMins, 10);
-  return (Number.isNaN(hours) ? 0 : hours) * 60 + (Number.isNaN(mins) ? 0 : mins);
 }
 
 interface ItemGroupEditorPageProps {
@@ -130,11 +122,8 @@ export default function ItemGroupEditorPage({
     members: string[];
     editingId?: string;
     isItem: boolean;  // Whether the draft is for an item or a group
-    // Shift-type items only: durable working-time authoring (WT4).
-    startTime?: string;   // "HH:MM"
-    endTime?: string;     // "HH:MM"
-    restHours?: string;   // rest, hours part
-    restMins?: string;    // rest, minutes part
+    workingTime?: ShiftTypeWorkingTime;
+    workingTimeError?: string;
   }>({
     id: '',
     description: '',
@@ -174,38 +163,12 @@ export default function ItemGroupEditorPage({
       return;
     }
 
-    // Resolve the shift-type working-time payload (WT4). `undefined` leaves the
-    // stored durable fields untouched; `{}` clears them; an object sets them.
-    // On error, block the save — the inline working-time error explains why.
     let workingTime: ShiftTypeWorkingTime | undefined;
     if (dataType === DataType.SHIFT_TYPES && draft.isItem) {
-      const trimmedStart = (draft.startTime ?? '').trim();
-      const trimmedEnd = (draft.endTime ?? '').trim();
-      const hasTimeInput = trimmedStart !== '' || trimmedEnd !== '';
-      const hasRestInput = (draft.restHours ?? '').trim() !== '' || (draft.restMins ?? '').trim() !== '';
-
-      if (hasTimeInput) {
-        const restMinutes = parseRestMinutes(draft.restHours ?? '', draft.restMins ?? '');
-        const derivation = deriveWorkingMinutes(trimmedStart, trimmedEnd, restMinutes);
-        if (derivation.error || derivation.workingMinutes === undefined) {
-          return;
-        }
-        workingTime = {
-          durationMinutes: derivation.workingMinutes,
-          startTime: trimmedStart,
-          endTime: trimmedEnd,
-          restMinutes: restMinutes > 0 ? restMinutes : undefined,
-        };
-      } else if (hasRestInput) {
-        // Rest without start/end times cannot derive a working time.
+      if (draft.workingTimeError) {
         return;
-      } else {
-        // No times authored. Clear the stored times only when the item had some
-        // to begin with (an intentional erase); otherwise leave the item alone so
-        // an unrelated ID/description edit never wipes durable fields.
-        const original = draft.editingId ? items.find(item => item.id === draft.editingId) : undefined;
-        workingTime = original?.startTime && original?.endTime ? {} : undefined;
       }
+      workingTime = draft.workingTime ?? {};
     }
 
     const wasEditing = !!draft.editingId;
@@ -289,16 +252,13 @@ export default function ItemGroupEditorPage({
           members: [],
           editingId: id,
           isItem: true,
-          // Hydrate the durable working-time inputs from the stored fields so
-          // they survive reopen and stay editable (WT4).
-          startTime: item.startTime ?? '',
-          endTime: item.endTime ?? '',
-          restHours: item.restMinutes != null && Math.floor(item.restMinutes / 60) > 0
-            ? String(Math.floor(item.restMinutes / 60))
-            : '',
-          restMins: item.restMinutes != null && item.restMinutes % 60 > 0
-            ? String(item.restMinutes % 60)
-            : ''
+          workingTime: {
+            durationMinutes: item.durationMinutes,
+            startTime: item.startTime,
+            endTime: item.endTime,
+            restMinutes: item.restMinutes,
+          },
+          workingTimeError: "",
         });
       } else {
         console.error(`${itemLabel} with ID ${id} not found during edit. ${ERROR_SHOULD_NOT_HAPPEN}`);
@@ -448,21 +408,9 @@ export default function ItemGroupEditorPage({
     setDraft(prev => ({ ...prev, description: e.target.value }));
   };
 
-  const handleDraftStartTimeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setDraft(prev => ({ ...prev, startTime: e.target.value }));
-  };
-
-  const handleDraftEndTimeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setDraft(prev => ({ ...prev, endTime: e.target.value }));
-  };
-
-  const handleDraftRestHoursChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setDraft(prev => ({ ...prev, restHours: e.target.value }));
-  };
-
-  const handleDraftRestMinutesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setDraft(prev => ({ ...prev, restMins: e.target.value }));
-  };
+  const handleWorkingTimeChange = useCallback((workingTime: ShiftTypeWorkingTime, workingTimeError: string) => {
+    setDraft(prev => ({ ...prev, workingTime, workingTimeError }));
+  }, []);
 
   const handleMemberToggle = (id: string) => {
     // Using a state updater function that takes the previous state as an argument is required for handling quick multi-select drag.
@@ -634,28 +582,6 @@ export default function ItemGroupEditorPage({
     groupsReadOnly,
   });
 
-  // Live derived working-time feedback for the shift-type editor (WT4): show the
-  // paid working hours ("7h 40m") or an inline validation error as the user types.
-  let workingTimeSummary = '';
-  let workingTimeError = '';
-  if (dataType === DataType.SHIFT_TYPES && draft.isItem) {
-    const trimmedStart = (draft.startTime ?? '').trim();
-    const trimmedEnd = (draft.endTime ?? '').trim();
-    const hasTimeInput = trimmedStart !== '' || trimmedEnd !== '';
-    const hasRestInput = (draft.restHours ?? '').trim() !== '' || (draft.restMins ?? '').trim() !== '';
-    if (hasTimeInput) {
-      const restMinutes = parseRestMinutes(draft.restHours ?? '', draft.restMins ?? '');
-      const derivation = deriveWorkingMinutes(trimmedStart, trimmedEnd, restMinutes);
-      if (derivation.error || derivation.workingMinutes === undefined) {
-        workingTimeError = derivation.error ?? '';
-      } else {
-        workingTimeSummary = formatWorkingMinutes(derivation.workingMinutes);
-      }
-    } else if (hasRestInput) {
-      workingTimeError = 'Enter start and end time to set working time.';
-    }
-  }
-
   return (
     <div className="container mx-auto px-4 py-8">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
@@ -719,17 +645,13 @@ export default function ItemGroupEditorPage({
           onMemberToggle={handleMemberToggle}
           onSave={handleSave}
           onCancel={handleCancel}
-          showWorkingTimeField={dataType === DataType.SHIFT_TYPES}
-          startTimeValue={draft.startTime ?? ''}
-          endTimeValue={draft.endTime ?? ''}
-          restHoursValue={draft.restHours ?? ''}
-          restMinutesValue={draft.restMins ?? ''}
-          workingTimeSummary={workingTimeSummary}
-          workingTimeError={workingTimeError}
-          onStartTimeChange={handleDraftStartTimeChange}
-          onEndTimeChange={handleDraftEndTimeChange}
-          onRestHoursChange={handleDraftRestHoursChange}
-          onRestMinutesChange={handleDraftRestMinutesChange}
+          itemDetails={dataType === DataType.SHIFT_TYPES && draft.isItem ? (
+            <ShiftTypeWorkingTimeEditor
+              key={draft.editingId ? `edit:${draft.editingId}` : "add"}
+              initialFields={draft.workingTime ?? {}}
+              onChange={handleWorkingTimeChange}
+            />
+          ) : undefined}
         />
       )}
 

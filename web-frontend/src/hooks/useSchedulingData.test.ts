@@ -1159,17 +1159,17 @@ describe('useSchedulingData', () => {
 
     act(() => {
       result.current.addItem(DataType.SHIFT_TYPES, result.current.shiftTypeData, 'WT', [], 'Worked', {
-        durationMinutes: 460,
+        durationMinutes: 450,
         startTime: '08:00',
         endTime: '16:00',
-        restMinutes: 20,
+        restMinutes: 30,
       });
     });
 
     await waitFor(() => {
       expect(result.current.shiftTypeData.items).toEqual(
         expect.arrayContaining([
-          { id: 'WT', description: 'Worked', durationMinutes: 460, startTime: '08:00', endTime: '16:00', restMinutes: 20 },
+          { id: 'WT', description: 'Worked', durationMinutes: 450, startTime: '08:00', endTime: '16:00', restMinutes: 30 },
         ]),
       );
     });
@@ -1180,7 +1180,7 @@ describe('useSchedulingData', () => {
     await waitFor(() => {
       expect(reloaded.current.shiftTypeData.items).toEqual(
         expect.arrayContaining([
-          { id: 'WT', description: 'Worked', durationMinutes: 460, startTime: '08:00', endTime: '16:00', restMinutes: 20 },
+          { id: 'WT', description: 'Worked', durationMinutes: 450, startTime: '08:00', endTime: '16:00', restMinutes: 30 },
         ]),
       );
     });
@@ -3282,7 +3282,7 @@ describe('useSchedulingData', () => {
     });
   });
 
-  it('logs and no-ops when updateItem would create inconsistent group members', async () => {
+  it('logs the inconsistency but still cascades the rename into group members with a dangling id', async () => {
     const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
@@ -3306,9 +3306,14 @@ describe('useSchedulingData', () => {
       result.current.updateItem(DataType.PEOPLE, result.current.peopleData, 'P1', 'P1X');
     });
 
+    // 'MISSING' is neither a known item nor a known group, so the member re-sort
+    // drops it and the length-mismatch guard logs the inconsistency. The rename
+    // reference cascade (FR-RI-01/17) still rewrites the live P1 reference to P1X
+    // rather than leaving a stale reference to the renamed person; the dangling
+    // 'MISSING' id is left untouched.
     await waitFor(() => {
       const group = result.current.peopleData.groups.find(g => g.id === 'G1');
-      expect(group?.members).toEqual(['P1', 'MISSING']);
+      expect(group?.members).toEqual(['P1X', 'MISSING']);
     });
     expect(errorSpy).toHaveBeenCalled();
   });
@@ -3786,7 +3791,7 @@ describe('useSchedulingData', () => {
     });
   });
 
-  it('warns for backend-compatible shift count vector expressions outside the frontend editing subset', async () => {
+  it('preserves an unmarked shift count vector expression/target and notes it once', async () => {
     const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
 
     act(() => {
@@ -3829,140 +3834,328 @@ describe('useSchedulingData', () => {
         expression: ['x >= T', 'x <= T'],
         target: [1, 3],
       });
+      // Arrays round-trip losslessly (never flattened); one advisory notes the
+      // advanced list shape, which the web UI edits as raw YAML (WT6).
       expect(result.current.yamlImportWarnings).toEqual([
-        expect.stringContaining('preferences[0].expression'),
-        expect.stringContaining('preferences[0].target'),
+        expect.stringContaining('preferences[0]'),
       ]);
+      expect(result.current.yamlImportWarnings[0]).toMatch(/advanced|list|YAML/i);
     });
   });
 
-  describe('shift-count hoursContract import validation', () => {
-    const loadCountWithHoursContract = (
-      result: { current: ReturnType<typeof useSchedulingData> },
-      hoursContract: unknown,
-    ) => {
-      act(() => {
-        result.current.loadFromYaml({
-          apiVersion: 'alpha',
-          dates: {
-            range: { startDate: '2026-04-01', endDate: '2026-04-01' },
-            items: [{ id: '01', description: '' }],
-            groups: [],
-          },
-          people: {
-            items: [{ id: 'P1', description: '', history: [] }],
-            groups: [],
-          },
-          shiftTypes: {
-            items: [{ id: 'D', description: '' }],
-            groups: [],
-          },
-          preferences: [
-            {
-              type: SHIFT_COUNT,
-              person: ['P1'],
-              countDates: ['01'],
-              countShiftTypes: ['D'],
-              expression: 'x >= T',
-              target: 1,
-              weight: 1,
-              hoursContract,
-            },
-          ],
-          export: { formatting: [] },
-        });
-      });
-    };
+  describe('WT3 structural import boundary (whole-candidate rejection)', () => {
+    // A structurally sound baseline the invalid imports must fail to displace.
+    const baselineYaml = () => ({
+      apiVersion: 'alpha',
+      description: 'baseline',
+      dates: { range: { startDate: '2026-04-01', endDate: '2026-04-01' }, items: [{ id: '01', description: '' }], groups: [] },
+      people: { items: [{ id: 'P1', description: '', history: [] }], groups: [] },
+      shiftTypes: { items: [{ id: 'D', description: '' } as Record<string, unknown>], groups: [] },
+      preferences: [
+        { type: 'at most one shift per day' },
+        { type: SHIFT_COUNT, person: ['P1'], countDates: ['01'], countShiftTypes: ['D'], expression: 'x >= T', target: 2, weight: 1 } as Record<string, unknown>,
+      ],
+      export: { formatting: [] },
+    });
 
     const getCount = (result: { current: ReturnType<typeof useSchedulingData> }) =>
       result.current.preferences.find(pref => pref.type === SHIFT_COUNT) as
-        | { hoursContract?: { unit: string } }
+        | { target?: number; hoursContract?: { unit: string; policy: string } }
         | undefined;
 
-    it('keeps a valid hoursContract and surfaces no warning', async () => {
-      const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+    const loadBaseline = (result: { current: ReturnType<typeof useSchedulingData> }) => {
+      act(() => { result.current.loadFromYaml(baselineYaml()); });
+    };
 
-      loadCountWithHoursContract(result, { unit: 'hour' });
+    it('commits a valid scenario, keeps a valid marker, and canonicalizes zero rest', async () => {
+      const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+      const scenario = baselineYaml();
+      scenario.shiftTypes.items[0] = { id: 'D', description: '', startTime: '09:00', endTime: '17:00', restMinutes: 0, durationMinutes: 480 };
+      Object.assign(scenario.preferences[1], {
+        hoursContract: { unit: 'half-hour', policy: 'exact' },
+        countShiftTypeCoefficients: [['D', 16]],
+        expression: 'x = T',
+        target: 320,
+        weight: Number.POSITIVE_INFINITY,
+      });
+
+      act(() => { result.current.loadFromYaml(scenario); });
 
       await waitFor(() => {
-        expect(getCount(result)?.hoursContract).toEqual({ unit: 'hour' });
+        expect(getCount(result)?.hoursContract).toEqual({ unit: 'half-hour', policy: 'exact' });
+        const shiftType = result.current.shiftTypeData.items.find(item => item.id === 'D') as Record<string, unknown>;
+        expect(shiftType).toMatchObject({ startTime: '09:00', endTime: '17:00', durationMinutes: 480 });
+        expect(shiftType).not.toHaveProperty('restMinutes');
         expect(result.current.yamlImportWarnings).toEqual([]);
       });
     });
 
-    it('drops an empty hoursContract and warns', async () => {
+    it('keeps a bare positive grid duration untouched', async () => {
       const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
-
-      loadCountWithHoursContract(result, {});
+      const scenario = baselineYaml();
+      scenario.shiftTypes.items[0] = { id: 'D', description: '', durationMinutes: 510 };
+      act(() => { result.current.loadFromYaml(scenario); });
 
       await waitFor(() => {
-        expect(getCount(result)?.hoursContract).toBeUndefined();
-        expect(result.current.yamlImportWarnings).toEqual([
-          expect.stringContaining('preferences[0].hoursContract'),
-        ]);
+        expect(result.current.shiftTypeData.items.find(item => item.id === 'D')).toMatchObject({ durationMinutes: 510 });
+        expect(result.current.yamlImportWarnings).toEqual([]);
       });
     });
 
-    it('drops an unknown-unit hoursContract and warns', async () => {
+    const rejectionCases: Array<[string, (yaml: ReturnType<typeof baselineYaml>) => void, string]> = [
+      ['a retired hour-unit marker', y => { y.preferences[1].hoursContract = { unit: 'hour', policy: 'exact' }; }, 'preferences[1].hoursContract'],
+      ['a legacy bare { unit } marker (no policy)', y => { y.preferences[1].hoursContract = { unit: 'half-hour' }; }, 'preferences[1].hoursContract'],
+      ['an empty marker', y => { y.preferences[1].hoursContract = {}; }, 'preferences[1].hoursContract'],
+      ['an unknown policy', y => { y.preferences[1].hoursContract = { unit: 'half-hour', policy: 'soft' }; }, 'preferences[1].hoursContract'],
+      ['an extra-key marker', y => { y.preferences[1].hoursContract = { unit: 'half-hour', policy: 'exact', extra: 1 }; }, 'preferences[1].hoursContract'],
+      ['an off-grid bare duration', y => { y.shiftTypes.items[0].durationMinutes = 455; }, 'shiftTypes.items[0]'],
+      ['a mismatched clock duration', y => { Object.assign(y.shiftTypes.items[0], { startTime: '08:00', endTime: '16:00', durationMinutes: 470 }); }, 'shiftTypes.items[0]'],
+      ['a partial clock shape', y => { Object.assign(y.shiftTypes.items[0], { startTime: '08:00' }); }, 'shiftTypes.items[0]'],
+      ['a present empty clock string', y => { Object.assign(y.shiftTypes.items[0], { startTime: '', endTime: '' }); }, 'shiftTypes.items[0]'],
+    ];
+
+    it.each(rejectionCases)(
+      'rejects the whole import for %s, keeping prior state, storage, and history stable',
+      async (_name, mutate, pathFragment) => {
+        const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+        loadBaseline(result);
+        await waitFor(() => { expect(getCount(result)?.target).toBe(2); });
+        const priorStored = localStorage.getItem(STORAGE_KEY);
+
+        const invalid = baselineYaml();
+        mutate(invalid);
+        act(() => { result.current.loadFromYaml(invalid); });
+
+        await waitFor(() => {
+          expect(result.current.yamlImportWarnings).toEqual([expect.stringContaining(pathFragment)]);
+        });
+
+        // Prior state and storage are byte-stable — nothing stripped or committed.
+        expect(getCount(result)?.target).toBe(2);
+        expect(result.current.descriptionData).toBe('baseline');
+        expect(result.current.shiftTypeData.items.find(item => item.id === 'D')).not.toHaveProperty('startTime');
+        expect(localStorage.getItem(STORAGE_KEY)).toBe(priorStored);
+
+        // The rejected import added no history entry: undo returns to the state
+        // before the baseline import (no shift count), not to a rejected candidate.
+        act(() => { result.current.undo(); });
+        await waitFor(() => { expect(getCount(result)).toBeUndefined(); });
+      }
+    );
+
+    it('keeps source preference indices on rejection, then normalizes a corrected retry', async () => {
       const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+      loadBaseline(result);
+      await waitFor(() => { expect(getCount(result)?.target).toBe(2); });
+      const priorStored = localStorage.getItem(STORAGE_KEY);
 
-      loadCountWithHoursContract(result, { unit: 'minutes' });
+      const candidate = baselineYaml();
+      candidate.shiftTypes.items[0] = {
+        id: 'D',
+        description: '',
+        startTime: '09:00',
+        endTime: '17:00',
+        restMinutes: 0,
+        durationMinutes: 480,
+      };
+      candidate.shiftTypes.items.push({ id: 'E', description: '' });
+      candidate.preferences = [
+        {
+          type: SHIFT_COUNT,
+          description: 'Stale ALL contract',
+          person: ['P1'],
+          countDates: ['01'],
+          countShiftTypes: ['ALL'],
+          countShiftTypeCoefficients: [['D', 16]],
+          hoursContract: { unit: 'half-hour', policy: 'exact' },
+          expression: 'x = T',
+          target: 320,
+          weight: Number.POSITIVE_INFINITY,
+        } as Record<string, unknown>,
+        { type: 'at most one shift per day' },
+      ];
 
+      let rejected: ReturnType<typeof result.current.loadFromYaml> | undefined;
+      act(() => { rejected = result.current.loadFromYaml(candidate); });
+
+      expect(rejected).toMatchObject({
+        ok: false,
+        diagnostic: {
+          code: 'missing_coefficient',
+          path: 'preferences[0].countShiftTypeCoefficients',
+          preferenceIndex: 0,
+        },
+      });
+      expect(rejected && !rejected.ok ? rejected.message : '').toContain("'E'");
+      expect(getCount(result)?.target).toBe(2);
+      expect(result.current.shiftTypeData.items.some(item => item.id === 'E')).toBe(false);
+      expect(result.current.shiftTypeData.items.find(item => item.id === 'D'))
+        .not.toHaveProperty('startTime');
+      expect(localStorage.getItem(STORAGE_KEY)).toBe(priorStored);
+
+      (candidate.preferences[0] as Record<string, unknown>).countShiftTypeCoefficients = [
+        ['D', 16],
+        ['E', 17],
+      ];
+      let accepted: ReturnType<typeof result.current.loadFromYaml> | undefined;
+      act(() => { accepted = result.current.loadFromYaml(candidate); });
+
+      expect(accepted).toEqual({ ok: true });
       await waitFor(() => {
-        expect(getCount(result)?.hoursContract).toBeUndefined();
-        expect(result.current.yamlImportWarnings).toEqual([
-          expect.stringContaining('preferences[0].hoursContract'),
-        ]);
+        expect(getCount(result)?.target).toBe(320);
+        expect(result.current.shiftTypeData.items.some(item => item.id === 'E')).toBe(true);
+        expect(result.current.preferences[0].type).toBe('at most one shift per day');
+        expect(result.current.shiftTypeData.items.find(item => item.id === 'D'))
+          .toMatchObject({ startTime: '09:00', endTime: '17:00', durationMinutes: 480 });
+        expect(result.current.shiftTypeData.items.find(item => item.id === 'D'))
+          .not.toHaveProperty('restMinutes');
       });
     });
+  });
 
-    it('drops an extra-key hoursContract and warns', async () => {
-      const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+  describe('WT3 storage hydration boundary (no-migration reset)', () => {
+    const storedState = (mutate?: (state: Record<string, unknown>) => void) => {
+      const state = {
+        apiVersion: 'alpha',
+        description: 'stored',
+        dates: { range: { startDate: '2026-04-01', endDate: '2026-04-01' }, items: [], groups: [] },
+        people: { items: [{ id: 'P1', description: '' }], groups: [] },
+        shiftTypes: { items: [{ id: 'D', description: '' } as Record<string, unknown>], groups: [] },
+        preferences: [
+          { type: 'at most one shift per day' },
+          { type: SHIFT_COUNT, person: ['P1'], countDates: ['ALL'], countShiftTypes: ['D'], countShiftTypeCoefficients: [['D', 16]], expression: 'x = T', target: 320, weight: 1, hoursContract: { unit: 'half-hour', policy: 'exact' } } as Record<string, unknown>,
+        ],
+        export: { formatting: [] },
+      };
+      mutate?.(state as unknown as Record<string, unknown>);
+      return state;
+    };
 
-      loadCountWithHoursContract(result, { unit: 'hour', extra: 1 });
+    const seed = (state: unknown, history: unknown[] = [state]) => {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ state, history, currentHistoryIndex: 0 }));
+    };
 
-      await waitFor(() => {
-        expect(getCount(result)?.hoursContract).toBeUndefined();
-        expect(result.current.yamlImportWarnings).toEqual([
-          expect.stringContaining('preferences[0].hoursContract'),
-        ]);
-      });
+    const storedCount = (state: { preferences: Array<{ type?: unknown }> }) =>
+      state.preferences.find(pref => pref.type === SHIFT_COUNT) as { hoursContract?: unknown } | undefined;
+
+    it('loads a valid current-schema stored state as-is', () => {
+      seed(storedState());
+      const hydrated = loadStateFromStorage();
+      expect(hydrated.state.description).toBe('stored');
+      expect(storedCount(hydrated.state)?.hoursContract).toEqual({ unit: 'half-hour', policy: 'exact' });
     });
 
-    it('preserves a valid hoursContract through localStorage and undo/redo', async () => {
-      const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
-
-      loadCountWithHoursContract(result, { unit: 'half-hour' });
-
-      await waitFor(() => {
-        expect(getCount(result)?.hoursContract).toEqual({ unit: 'half-hour' });
+    it('canonicalizes permitted omissions in current state and every history entry', () => {
+      const current = storedState(state => {
+        Object.assign(((state.shiftTypes as { items: Array<Record<string, unknown>> }).items)[0], {
+          durationMinutes: null,
+          startTime: null,
+          endTime: null,
+          restMinutes: null,
+        });
       });
-
-      const stored = localStorage.getItem(STORAGE_KEY);
-      expect(stored).toContain('hoursContract');
-
-      // Replace with a config that has no hours contract, then undo back to it.
-      act(() => {
-        result.current.loadFromYaml({
-          apiVersion: 'alpha',
-          dates: { range: { startDate: '2026-04-01', endDate: '2026-04-01' }, items: [{ id: '01', description: '' }], groups: [] },
-          people: { items: [{ id: 'P1', description: '', history: [] }], groups: [] },
-          shiftTypes: { items: [{ id: 'D', description: '' }], groups: [] },
-          preferences: [],
-          export: { formatting: [] },
+      const prior = storedState(state => {
+        state.description = 'prior';
+        Object.assign(((state.shiftTypes as { items: Array<Record<string, unknown>> }).items)[0], {
+          startTime: '09:00',
+          restMinutes: 0,
+          endTime: '17:00',
+          durationMinutes: 480,
         });
       });
 
-      await waitFor(() => {
-        expect(getCount(result)).toBeUndefined();
+      seed(current, [prior]);
+      const hydrated = loadStateFromStorage();
+      const currentShift = hydrated.state.shiftTypes.items.find(item => item.id === 'D');
+      const priorShift = hydrated.history[0].shiftTypes.items.find(item => item.id === 'D');
+
+      expect(currentShift).not.toHaveProperty('durationMinutes');
+      expect(currentShift).not.toHaveProperty('startTime');
+      expect(currentShift).not.toHaveProperty('endTime');
+      expect(currentShift).not.toHaveProperty('restMinutes');
+      expect(priorShift).toMatchObject({
+        startTime: '09:00',
+        endTime: '17:00',
+        durationMinutes: 480,
+      });
+      expect(priorShift).not.toHaveProperty('restMinutes');
+    });
+
+    it('keeps the wholesale safe fallback when only a history entry is invalid', () => {
+      const invalidPrior = storedState(state => {
+        ((state.shiftTypes as { items: Array<Record<string, unknown>> }).items)[0].durationMinutes = 455;
       });
 
-      act(() => {
-        result.current.undo();
-      });
+      seed(storedState(), [invalidPrior]);
+      const hydrated = loadStateFromStorage();
 
-      await waitFor(() => {
-        expect(getCount(result)?.hoursContract).toEqual({ unit: 'half-hour' });
+      expect(hydrated.state.description).not.toBe('stored');
+      expect(storedCount(hydrated.state)).toBeUndefined();
+    });
+
+    it.each<[string, (state: Record<string, unknown>) => void]>([
+      ['a retired hour-unit marker', state => {
+        (state.preferences as Array<Record<string, unknown>>)[1].hoursContract = { unit: 'hour', policy: 'exact' };
+      }],
+      ['an invalid bare working time', state => {
+        ((state.shiftTypes as { items: Array<Record<string, unknown>> }).items)[0].durationMinutes = 455;
+      }],
+      ['a present empty clock string', state => {
+        Object.assign(((state.shiftTypes as { items: Array<Record<string, unknown>> }).items)[0], { startTime: '', endTime: '' });
+      }],
+    ])('resets stale storage with %s to the safe default (no migration)', (_name, mutate) => {
+      seed(storedState(mutate));
+      const hydrated = loadStateFromStorage();
+      // Safe fallback: not the stored scenario, and the stale invalid data is gone.
+      expect(hydrated.state.description).not.toBe('stored');
+      expect(storedCount(hydrated.state)).toBeUndefined();
+    });
+  });
+
+  describe('WT3 lossless round-trips for generic arrays and marked Range', () => {
+    const scenario = () => ({
+      apiVersion: 'alpha',
+      dates: { range: { startDate: '2026-04-01', endDate: '2026-04-01' }, items: [{ id: '01', description: '' }], groups: [] },
+      people: { items: [{ id: 'P1', description: '', history: [] }], groups: [] },
+      shiftTypes: { items: [{ id: 'D', description: '' }], groups: [] },
+      preferences: [
+        { type: 'at most one shift per day' },
+        { type: SHIFT_COUNT, person: ['P1'], countDates: ['01'], countShiftTypes: ['D'], expression: ['x >= T', 'x <= T'], target: [1, 3], weight: 1 },
+        { type: SHIFT_COUNT, person: ['P1'], countDates: ['01'], countShiftTypes: ['D'], countShiftTypeCoefficients: [['D', 16]], hoursContract: { unit: 'half-hour', policy: 'range' }, expression: ['x >= T', 'x <= T'], target: [300, 340], weight: Number.POSITIVE_INFINITY },
+      ],
+      export: { formatting: [] },
+    });
+
+    const counts = (prefs: Array<{ type?: unknown }>) =>
+      prefs.filter(pref => pref.type === SHIFT_COUNT) as Array<{ expression: unknown; target: unknown; hoursContract?: unknown }>;
+
+    it('preserves generic arrays and a marked Range through import and storage reload', async () => {
+      const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+      act(() => { result.current.loadFromYaml(scenario()); });
+      await waitFor(() => { expect(counts(result.current.preferences)).toHaveLength(2); });
+
+      const imported = counts(result.current.preferences);
+      expect(imported[0]).toMatchObject({ expression: ['x >= T', 'x <= T'], target: [1, 3] });
+      expect(imported[1]).toMatchObject({ expression: ['x >= T', 'x <= T'], target: [300, 340], hoursContract: { unit: 'half-hour', policy: 'range' } });
+
+      const reloaded = counts(loadStateFromStorage().state.preferences);
+      expect(reloaded[0]).toMatchObject({ expression: ['x >= T', 'x <= T'], target: [1, 3] });
+      expect(reloaded[1]).toMatchObject({ target: [300, 340], hoursContract: { unit: 'half-hour', policy: 'range' } });
+    });
+
+    it('deep-copies the marker and arrays on store-level duplication', async () => {
+      const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+      act(() => { result.current.loadFromYaml(scenario()); });
+      await waitFor(() => { expect(counts(result.current.preferences)).toHaveLength(2); });
+
+      // Duplicate the marked Range count (shift-count sublist index 1).
+      act(() => { result.current.duplicatePreferenceByType(SHIFT_COUNT, 1); });
+      await waitFor(() => { expect(counts(result.current.preferences)).toHaveLength(3); });
+
+      expect(counts(result.current.preferences)[2]).toMatchObject({
+        expression: ['x >= T', 'x <= T'],
+        target: [300, 340],
+        hoursContract: { unit: 'half-hour', policy: 'range' },
       });
     });
   });
@@ -4957,4 +5150,345 @@ describe('useSchedulingData', () => {
     });
   });
 
+});
+
+describe('nested ordered-group reference integrity (WT0 / FR-RI-17, AC-RI-19)', () => {
+  // A shift-type domain whose later group `AllClinical` references the earlier
+  // group `Clinical`, with both a generic and a marked (hoursContract) shift
+  // count selecting the later group. Only the non-auto-generated groups are
+  // asserted; the store appends the reserved ALL group after the user's groups.
+  const userGroups = (groups: { id: string; members: string[]; isAutoGenerated?: boolean }[]) =>
+    groups.filter(group => !group.isAutoGenerated);
+
+  const loadNestedGroupScenario = (result: { current: ReturnType<typeof useSchedulingData> }) => {
+    act(() => {
+      result.current.loadFromYaml({
+        apiVersion: 'alpha',
+        description: 'nested groups',
+        dates: {
+          range: { startDate: '2026-06-01', endDate: '2026-06-01' },
+          items: [{ id: '01', description: 'Date 1' }],
+          groups: [],
+        },
+        people: {
+          items: [{ id: 'P1', description: '', history: [] }],
+          groups: [],
+          history: [],
+        },
+        shiftTypes: {
+          items: [
+            { id: 'D', description: 'Day' },
+            { id: 'N', description: 'Night' },
+          ],
+          groups: [
+            { id: 'Clinical', members: ['D', 'N'], description: 'earlier group' },
+            { id: 'AllClinical', members: ['Clinical'], description: 'later group nesting Clinical' },
+          ],
+        },
+        preferences: [
+          {
+            type: SHIFT_COUNT,
+            person: ['P1'],
+            countDates: ['01'],
+            countShiftTypes: ['AllClinical'],
+            expression: 'x >= T',
+            target: 1,
+            weight: 1,
+          },
+          {
+            type: SHIFT_COUNT,
+            person: ['P1'],
+            countDates: ['01'],
+            countShiftTypes: ['AllClinical'],
+            countShiftTypeCoefficients: [['D', 16], ['N', 16]],
+            hoursContract: { unit: 'half-hour', policy: 'exact' },
+            expression: 'x = T',
+            target: 320,
+            weight: Number.POSITIVE_INFINITY,
+          },
+        ],
+        export: { formatting: [] },
+      });
+    });
+  };
+
+  const shiftCounts = (result: { current: ReturnType<typeof useSchedulingData> }) =>
+    result.current.preferences.filter(pref => pref.type === SHIFT_COUNT) as unknown as {
+      countShiftTypes: string[];
+      countShiftTypeCoefficients?: [string, number][];
+      hoursContract?: { unit: string };
+    }[];
+
+  it('rewrites an earlier group reference inside a later group when the earlier group is renamed', async () => {
+    const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+    loadNestedGroupScenario(result);
+
+    await waitFor(() => {
+      expect(userGroups(result.current.shiftTypeData.groups).some(group => group.id === 'Clinical')).toBe(true);
+    });
+
+    act(() => {
+      result.current.updateGroup(DataType.SHIFT_TYPES, result.current.shiftTypeData, 'Clinical', 'ClinicalRenamed');
+    });
+
+    await waitFor(() => {
+      const groups = userGroups(result.current.shiftTypeData.groups);
+      // Definition order preserved; only the renamed id and the nested reference change.
+      expect(groups.map(group => group.id)).toEqual(['ClinicalRenamed', 'AllClinical']);
+      expect(groups.find(group => group.id === 'AllClinical')?.members).toEqual(['ClinicalRenamed']);
+      // Both selectors keep referencing the later group — never a stale id.
+      const counts = shiftCounts(result);
+      expect(counts).toHaveLength(2);
+      counts.forEach(count => expect(count.countShiftTypes).toEqual(['AllClinical']));
+      const marked = counts.find(count => count.hoursContract);
+      expect(marked?.countShiftTypeCoefficients).toEqual([['D', 16], ['N', 16]]);
+    });
+  });
+
+  it('prunes an earlier group reference from a later group when the earlier group is deleted', async () => {
+    const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+    loadNestedGroupScenario(result);
+
+    await waitFor(() => {
+      expect(userGroups(result.current.shiftTypeData.groups).some(group => group.id === 'Clinical')).toBe(true);
+    });
+
+    act(() => {
+      result.current.deleteGroup(DataType.SHIFT_TYPES, result.current.shiftTypeData, 'Clinical');
+    });
+
+    await waitFor(() => {
+      const groups = userGroups(result.current.shiftTypeData.groups);
+      // Clinical is gone; the surviving later group stays in place with an empty
+      // member list (normal empty-group validation, not a stale id).
+      expect(groups.map(group => group.id)).toEqual(['AllClinical']);
+      expect(groups.find(group => group.id === 'AllClinical')?.members).toEqual([]);
+      const counts = shiftCounts(result);
+      counts.forEach(count => expect(count.countShiftTypes).toEqual(['AllClinical']));
+    });
+  });
+
+  it('reaches an item that lives inside a nested group on rename and delete', async () => {
+    const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+    loadNestedGroupScenario(result);
+
+    await waitFor(() => {
+      expect(result.current.shiftTypeData.items.some(item => item.id === 'D')).toBe(true);
+    });
+
+    act(() => {
+      result.current.updateItem(DataType.SHIFT_TYPES, result.current.shiftTypeData, 'D', 'Day');
+    });
+
+    await waitFor(() => {
+      const groups = userGroups(result.current.shiftTypeData.groups);
+      // The item reference is rewritten inside its group; the nested reference
+      // and the group definition order are preserved.
+      expect(groups.find(group => group.id === 'Clinical')?.members).toEqual(['Day', 'N']);
+      expect(groups.find(group => group.id === 'AllClinical')?.members).toEqual(['Clinical']);
+      expect(groups.map(group => group.id)).toEqual(['Clinical', 'AllClinical']);
+      // The marked count's coefficient id follows the item rename.
+      const marked = shiftCounts(result).find(count => count.hoursContract);
+      expect(marked?.countShiftTypeCoefficients).toEqual([['Day', 16], ['N', 16]]);
+    });
+
+    act(() => {
+      result.current.deleteItem(DataType.SHIFT_TYPES, result.current.shiftTypeData, 'Day');
+    });
+
+    await waitFor(() => {
+      const groups = userGroups(result.current.shiftTypeData.groups);
+      expect(groups.find(group => group.id === 'Clinical')?.members).toEqual(['N']);
+      expect(groups.find(group => group.id === 'AllClinical')?.members).toEqual(['Clinical']);
+      const marked = shiftCounts(result).find(count => count.hoursContract);
+      expect(marked?.countShiftTypeCoefficients).toEqual([['N', 16]]);
+    });
+  });
+
+  it('treats the nested-group rename cascade as one global history transition', async () => {
+    const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+    loadNestedGroupScenario(result);
+
+    await waitFor(() => {
+      expect(userGroups(result.current.shiftTypeData.groups).some(group => group.id === 'Clinical')).toBe(true);
+    });
+
+    act(() => {
+      result.current.updateGroup(DataType.SHIFT_TYPES, result.current.shiftTypeData, 'Clinical', 'ClinicalRenamed');
+    });
+
+    await waitFor(() => {
+      expect(userGroups(result.current.shiftTypeData.groups).find(group => group.id === 'AllClinical')?.members).toEqual(['ClinicalRenamed']);
+    });
+
+    // A single undo restores the entire cascade (group id + nested reference) at once.
+    act(() => {
+      result.current.undo();
+    });
+
+    await waitFor(() => {
+      const groups = userGroups(result.current.shiftTypeData.groups);
+      expect(groups.map(group => group.id)).toEqual(['Clinical', 'AllClinical']);
+      expect(groups.find(group => group.id === 'AllClinical')?.members).toEqual(['Clinical']);
+    });
+  });
+
+  // An imported backend-valid group may repeat a concrete member id alongside a
+  // nested group reference. The occurrence-aware re-sort must keep every repeated
+  // id defined (no `undefined` → YAML `null`) and hold the nested reference in
+  // place across the reorder and group edit/update paths.
+  const loadDuplicateMemberScenario = (result: { current: ReturnType<typeof useSchedulingData> }) => {
+    act(() => {
+      result.current.loadFromYaml({
+        apiVersion: 'alpha',
+        description: 'duplicate concrete members',
+        dates: {
+          range: { startDate: '2026-06-01', endDate: '2026-06-01' },
+          items: [{ id: '01', description: 'Date 1' }],
+          groups: [],
+        },
+        people: { items: [{ id: 'P1', description: '', history: [] }], groups: [], history: [] },
+        shiftTypes: {
+          items: [
+            { id: 'D', description: 'Day' },
+            { id: 'N', description: 'Night' },
+          ],
+          groups: [
+            { id: 'Clinical', members: ['D', 'N'], description: 'earlier group' },
+            { id: 'DupGroup', members: ['D', 'D', 'Clinical'], description: 'duplicate concrete + nested' },
+          ],
+        },
+        preferences: [],
+        export: { formatting: [] },
+      });
+    });
+  };
+
+  const dupGroupMembers = (result: { current: ReturnType<typeof useSchedulingData> }) =>
+    userGroups(result.current.shiftTypeData.groups).find(group => group.id === 'DupGroup')?.members;
+
+  it('preserves duplicate concrete members through an item reorder', async () => {
+    const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+    loadDuplicateMemberScenario(result);
+
+    await waitFor(() => {
+      expect(dupGroupMembers(result)).toEqual(['D', 'D', 'Clinical']);
+    });
+
+    act(() => {
+      // Reorder the items (N before D); the concrete members stay repeated and no
+      // slot collapses to undefined/null, while the nested reference holds place.
+      result.current.reorderItems(DataType.SHIFT_TYPES, result.current.shiftTypeData, [
+        { id: 'N', description: 'Night' },
+        { id: 'D', description: 'Day' },
+      ]);
+    });
+
+    await waitFor(() => {
+      const members = dupGroupMembers(result);
+      expect(members).toEqual(['D', 'D', 'Clinical']);
+      expect(members?.some(memberId => memberId === undefined || memberId === null)).toBe(false);
+    });
+  });
+
+  it('preserves duplicate concrete members through a group edit/update', async () => {
+    const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+    loadDuplicateMemberScenario(result);
+
+    await waitFor(() => {
+      expect(dupGroupMembers(result)).toEqual(['D', 'D', 'Clinical']);
+    });
+
+    act(() => {
+      // Re-supplying the duplicate members on a group update must not drop or
+      // blank a repeated concrete id, and the nested reference stays put.
+      result.current.updateGroup(
+        DataType.SHIFT_TYPES,
+        result.current.shiftTypeData,
+        'DupGroup',
+        'DupGroupRenamed',
+        ['D', 'D', 'Clinical'],
+        'edited'
+      );
+    });
+
+    await waitFor(() => {
+      const renamed = userGroups(result.current.shiftTypeData.groups).find(group => group.id === 'DupGroupRenamed');
+      expect(renamed?.members).toEqual(['D', 'D', 'Clinical']);
+      expect(renamed?.members.some(memberId => memberId === undefined || memberId === null)).toBe(false);
+    });
+  });
+
+  it('preserves the occurrence count when a duplicated member is renamed (direct path)', async () => {
+    const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+    loadDuplicateMemberScenario(result);
+
+    await waitFor(() => {
+      expect(dupGroupMembers(result)).toEqual(['D', 'D', 'Clinical']);
+    });
+
+    act(() => {
+      // Direct path (no groupIds): membership is unchanged, and each occurrence
+      // of the renamed item is rewritten in place — the count is not collapsed.
+      result.current.updateItem(DataType.SHIFT_TYPES, result.current.shiftTypeData, 'D', 'Day');
+    });
+
+    await waitFor(() => {
+      expect(dupGroupMembers(result)).toEqual(['Day', 'Day', 'Clinical']);
+      expect(userGroups(result.current.shiftTypeData.groups).find(group => group.id === 'Clinical')?.members).toEqual(['Day', 'N']);
+    });
+  });
+
+  it('preserves the occurrence count when a duplicated member is renamed (full editor groupIds path)', async () => {
+    const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+    loadDuplicateMemberScenario(result);
+
+    await waitFor(() => {
+      expect(dupGroupMembers(result)).toEqual(['D', 'D', 'Clinical']);
+    });
+
+    act(() => {
+      // The full editor always supplies the complete target group set. Keeping D
+      // (as Day) in both groups must preserve its duplicated occurrences in DupGroup.
+      result.current.updateItem(
+        DataType.SHIFT_TYPES,
+        result.current.shiftTypeData,
+        'D',
+        'Day',
+        ['Clinical', 'DupGroup']
+      );
+    });
+
+    await waitFor(() => {
+      expect(dupGroupMembers(result)).toEqual(['Day', 'Day', 'Clinical']);
+      expect(userGroups(result.current.shiftTypeData.groups).find(group => group.id === 'Clinical')?.members).toEqual(['Day', 'N']);
+    });
+  });
+
+  it('removes all occurrences of a duplicated member on explicit removal via the full editor', async () => {
+    const { result } = renderHook(() => useSchedulingData(), { wrapper: SchedulingDataProvider });
+    loadDuplicateMemberScenario(result);
+
+    await waitFor(() => {
+      expect(dupGroupMembers(result)).toEqual(['D', 'D', 'Clinical']);
+    });
+
+    act(() => {
+      // Renaming D→Day while dropping DupGroup from the target set is an explicit
+      // membership removal: every occurrence of the item leaves DupGroup, and the
+      // nested reference is preserved.
+      result.current.updateItem(
+        DataType.SHIFT_TYPES,
+        result.current.shiftTypeData,
+        'D',
+        'Day',
+        ['Clinical']
+      );
+    });
+
+    await waitFor(() => {
+      expect(dupGroupMembers(result)).toEqual(['Clinical']);
+      expect(userGroups(result.current.shiftTypeData.groups).find(group => group.id === 'Clinical')?.members).toEqual(['Day', 'N']);
+    });
+  });
 });

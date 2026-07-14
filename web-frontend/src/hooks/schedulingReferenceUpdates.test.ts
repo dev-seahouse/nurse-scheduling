@@ -33,7 +33,12 @@ import {
   ShiftTypeSuccessionsPreference,
 } from '@/types/scheduling';
 import { SchedulingState } from './schedulingState';
-import { applyReferencesForIdChange, applyReferencesForIdDeletion } from './schedulingReferenceUpdates';
+import {
+  applyGroupMembersForIdChange,
+  applyGroupMembersForIdDeletion,
+  applyReferencesForIdChange,
+  applyReferencesForIdDeletion,
+} from './schedulingReferenceUpdates';
 
 function createState(): SchedulingState {
   return {
@@ -321,6 +326,97 @@ describe('applyReferencesForIdDeletion', () => {
     expect(state.preferences.some(pref => pref.type === SHIFT_TYPE_REQUIREMENT)).toBe(false);
     expect(state.preferences.some(pref => pref.type === SHIFT_REQUEST)).toBe(false);
     expect(count?.countShiftTypes).toBe('N');
+  });
+});
+
+describe('nested ordered-group reference integrity (WT0 / FR-RI-17)', () => {
+  // Build a state whose group list has a later group referencing an earlier
+  // group as a nested member, plus a later group mixing an item and the nested
+  // group, in a fixed definition order. Members follow item/group definition
+  // order like the store produces.
+  const makeNestedGroupState = (): SchedulingState => {
+    const state = createState();
+    state.shiftTypes = {
+      items: [{ id: 'D', description: 'Day' }, { id: 'N', description: 'Night' }],
+      groups: [
+        { id: 'Clinical', members: ['D', 'N'], description: 'earlier group' },
+        { id: 'AllClinical', members: ['Clinical'], description: 'nested reference' },
+        { id: 'Mixed', members: ['D', 'Clinical'], description: 'item + nested reference' },
+      ],
+    };
+    return state;
+  };
+
+  const shiftGroups = (state: SchedulingState) => state.shiftTypes.groups;
+
+  describe('rename cascade', () => {
+    it('rewrites an earlier group reference inside later groups and preserves definition order', () => {
+      // The cascade rewrites nested references held by *other* groups; the
+      // renamed group's own id is set by the caller (updateGroup), so the group
+      // list order and ids are otherwise byte-stable.
+      const state = applyReferencesForIdChange(makeNestedGroupState(), DataType.SHIFT_TYPES, 'Clinical', 'ClinicalRenamed');
+      expect(shiftGroups(state).map(group => group.id)).toEqual(['Clinical', 'AllClinical', 'Mixed']);
+      expect(shiftGroups(state).find(group => group.id === 'AllClinical')?.members).toEqual(['ClinicalRenamed']);
+      expect(shiftGroups(state).find(group => group.id === 'Mixed')?.members).toEqual(['D', 'ClinicalRenamed']);
+    });
+
+    it('reaches an item that lives inside a nested group without disturbing the nested reference', () => {
+      const state = applyReferencesForIdChange(makeNestedGroupState(), DataType.SHIFT_TYPES, 'D', 'Day');
+      // The item reference is rewritten wherever it appears as a direct member;
+      // the nested group reference and definition order stay byte-stable.
+      expect(shiftGroups(state).find(group => group.id === 'Clinical')?.members).toEqual(['Day', 'N']);
+      expect(shiftGroups(state).find(group => group.id === 'Mixed')?.members).toEqual(['Day', 'Clinical']);
+      expect(shiftGroups(state).find(group => group.id === 'AllClinical')?.members).toEqual(['Clinical']);
+      expect(shiftGroups(state).map(group => group.id)).toEqual(['Clinical', 'AllClinical', 'Mixed']);
+    });
+
+    it('leaves group members untouched when the renamed id is not referenced', () => {
+      const before = makeNestedGroupState();
+      const after = applyGroupMembersForIdChange(before, DataType.SHIFT_TYPES, 'Absent', 'Renamed');
+      expect(after).toBe(before);
+    });
+  });
+
+  describe('delete cascade', () => {
+    it('prunes an earlier group reference from later groups without reordering the group list', () => {
+      // The group object itself is removed by the caller (deleteGroup); the
+      // cascade only prunes the dangling nested reference from the survivors.
+      const state = applyReferencesForIdDeletion(makeNestedGroupState(), DataType.SHIFT_TYPES, ['Clinical']);
+      expect(shiftGroups(state).find(group => group.id === 'AllClinical')?.members).toEqual([]);
+      expect(shiftGroups(state).find(group => group.id === 'Mixed')?.members).toEqual(['D']);
+      expect(shiftGroups(state).map(group => group.id)).toEqual(['Clinical', 'AllClinical', 'Mixed']);
+    });
+
+    it('prunes a deleted item from the group that holds it and from mixed later groups', () => {
+      const state = applyReferencesForIdDeletion(makeNestedGroupState(), DataType.SHIFT_TYPES, ['D']);
+      expect(shiftGroups(state).find(group => group.id === 'Clinical')?.members).toEqual(['N']);
+      expect(shiftGroups(state).find(group => group.id === 'Mixed')?.members).toEqual(['Clinical']);
+      expect(shiftGroups(state).find(group => group.id === 'AllClinical')?.members).toEqual(['Clinical']);
+    });
+
+    it('is a no-op for an empty deletion set and for unreferenced ids', () => {
+      const before = makeNestedGroupState();
+      expect(applyGroupMembersForIdDeletion(before, DataType.SHIFT_TYPES, [])).toBe(before);
+      expect(applyGroupMembersForIdDeletion(before, DataType.SHIFT_TYPES, ['Absent'])).toBe(before);
+    });
+  });
+
+  it('cascades nested references in the people and dates domains too', () => {
+    const state = createState();
+    state.people.groups = [
+      { id: 'Team', members: ['P1', 'P2'], description: '' },
+      { id: 'AllTeams', members: ['Team'], description: '' },
+    ];
+    state.dates.groups = [
+      { id: 'Workday', members: ['2026-01-01'], description: '' },
+      { id: 'AllWorkdays', members: ['Workday'], description: '' },
+    ];
+
+    const renamed = applyReferencesForIdChange(state, DataType.PEOPLE, 'Team', 'TeamB');
+    expect(renamed.people.groups.find(group => group.id === 'AllTeams')?.members).toEqual(['TeamB']);
+
+    const deleted = applyReferencesForIdDeletion(state, DataType.DATES, ['Workday']);
+    expect(deleted.dates.groups.find(group => group.id === 'AllWorkdays')?.members).toEqual([]);
   });
 });
 

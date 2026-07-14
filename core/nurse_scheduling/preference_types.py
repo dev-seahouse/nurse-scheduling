@@ -465,13 +465,13 @@ def shift_count(ctx: Context, preference: models.ShiftCountPreference, preferenc
             raise ValueError(f"Target must be non-negative, but got {T}")
 
         for p in ps:
-            unique_var_prefix = f"pref_{preference_idx}_p_{p}"
+            # Include the expression/target pair index so a multi-pair count
+            # (e.g. a contracted-hours Range emitting `x >= T` and `x <= T`)
+            # names each boundary's model variable and report distinctly instead
+            # of colliding on a shared prefix (DL09 D8 / C3 CON-SEM-05).
+            unique_var_prefix = f"pref_{preference_idx}_p_{p}_pair_{i}"
             # Calculate actual number of shifts for this person
-            x = sum(
-                coefficients[s] * _day_state_expr(ctx, d, s, p)
-                for d in c_ds
-                for s in c_ss
-            )
+            x = sum(coefficients[s] * _day_state_expr(ctx, d, s, p) for d in c_ds for s in c_ss)
 
             # TODO: Also Report value of `x`
 
@@ -620,9 +620,7 @@ def shift_affinity(ctx: Context, preference: models.ShiftAffinityPreference, pre
                     some_p1_matched_var_name = f"{unique_var_prefix}_some_p1_matched"
                     some_p2_matched_var_name = f"{unique_var_prefix}_some_p2_matched"
                     is_match_var_name = f"{unique_var_prefix}_is_match"
-                    sum1 = sum(
-                        _day_state_expr(ctx, d, s, p) for p in p1s for s in ss
-                    )
+                    sum1 = sum(_day_state_expr(ctx, d, s, p) for p in p1s for s in ss)
                     ctx.model_vars[some_p1_matched_var_name] = some_p1_matched = (
                         ctx.solver.create_bool_var_with_constraint(
                             some_p1_matched_var_name,
@@ -632,9 +630,7 @@ def shift_affinity(ctx: Context, preference: models.ShiftAffinityPreference, pre
                             (0, len(p1s) * len(ss)),
                         )
                     )
-                    sum2 = sum(
-                        _day_state_expr(ctx, d, s, p) for p in p2s for s in ss
-                    )
+                    sum2 = sum(_day_state_expr(ctx, d, s, p) for p in p2s for s in ss)
                     ctx.model_vars[some_p2_matched_var_name] = some_p2_matched = (
                         ctx.solver.create_bool_var_with_constraint(
                             some_p2_matched_var_name,
@@ -690,9 +686,7 @@ def shift_type_covering(ctx: Context, preference: models.ShiftTypeCoveringPrefer
         out = []
         for element in raw_list:
             ids = element if isinstance(element, list) else [element]
-            parsed = sorted(set(itertools.chain.from_iterable(
-                utils.parse_pids(pid, ctx.map_pid_p) for pid in ids
-            )))
+            parsed = sorted(set(itertools.chain.from_iterable(utils.parse_pids(pid, ctx.map_pid_p) for pid in ids)))
             if parsed:
                 out.append(parsed)
         return out
@@ -701,9 +695,7 @@ def shift_type_covering(ctx: Context, preference: models.ShiftTypeCoveringPrefer
         out = []
         for element in raw_list:
             ids = element if isinstance(element, list) else [element]
-            parsed = sorted(set(itertools.chain.from_iterable(
-                utils.parse_sids(sid, ctx.map_sid_s) for sid in ids
-            )))
+            parsed = sorted(set(itertools.chain.from_iterable(utils.parse_sids(sid, ctx.map_sid_s) for sid in ids)))
             if parsed:
                 out.append(parsed)
         return out
@@ -750,14 +742,12 @@ def shift_type_covering(ctx: Context, preference: models.ShiftTypeCoveringPrefer
                         f"_s_{ss[0]}_cover"
                     )
 
-                    ctx.model_vars[any_preceptee_name] = any_preceptee = (
-                        ctx.solver.create_bool_var_with_constraint(
-                            any_preceptee_name,
-                            sum(preceptee_vars),
-                            constants.Operator.GE,
-                            1,
-                            (0, len(preceptee_vars)),
-                        )
+                    ctx.model_vars[any_preceptee_name] = any_preceptee = ctx.solver.create_bool_var_with_constraint(
+                        any_preceptee_name,
+                        sum(preceptee_vars),
+                        constants.Operator.GE,
+                        1,
+                        (0, len(preceptee_vars)),
                     )
                     ctx.model_vars[at_least_one_preceptor_name] = at_least_one_preceptor = (
                         ctx.solver.create_bool_var_with_constraint(
@@ -772,9 +762,7 @@ def shift_type_covering(ctx: Context, preference: models.ShiftTypeCoveringPrefer
                     # Hard covering: (some preceptor working) OR (no preceptee working)
                     ctx.solver.add_constraint(any_preceptee <= at_least_one_preceptor)
 
-                    ctx.reports.append(
-                        Report(any_preceptee_name, any_preceptee, lambda x: x == 1)
-                    )
+                    ctx.reports.append(Report(any_preceptee_name, any_preceptee, lambda x: x == 1))
                     ctx.reports.append(
                         Report(
                             at_least_one_preceptor_name,

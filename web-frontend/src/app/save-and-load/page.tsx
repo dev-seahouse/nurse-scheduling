@@ -26,11 +26,16 @@ import yaml from 'js-yaml';
 import { useSchedulingData } from '@/hooks/useSchedulingData';
 import ToggleButton from '@/components/ToggleButton';
 import UploadButton from '@/components/UploadButton';
+import ContractedHoursValidationNotice from '@/components/ContractedHoursValidationNotice';
 import { CURRENT_APP_VERSION } from '@/utils/version';
 import { generateYamlFromState } from '@/utils/yamlGenerator';
 import { anonymizeSchedulingState } from '@/utils/anonymizeSchedulingState';
 import { getMissingPreferredScatterDateGroups, randomizeConcreteDateShiftRequests } from '@/utils/randomizeShiftRequests';
 import { useTabSwitchWarning } from '@/utils/unsavedEditingState';
+import {
+  ContractedHoursDiagnostic,
+  isContractedHoursBoundaryError,
+} from '@/utils/contractedHoursBoundary';
 
 const API_VERSION_KEY = 'apiVersion';
 const BOM_MOJIBAKE_API_VERSION_PREFIXES = [
@@ -78,6 +83,7 @@ export default function SaveAndLoadPage() {
   const [isEditing, setIsEditing] = useState(false);
   const [editedYaml, setEditedYaml] = useState('');
   const [yamlError, setYamlError] = useState<string | null>(null);
+  const [contractedHoursDiagnostic, setContractedHoursDiagnostic] = useState<ContractedHoursDiagnostic | null>(null);
   const [copied, setCopied] = useState(false);
   const [anonymizePeopleItems, setAnonymizePeopleItems] = useState(true);
   const [anonymizePeopleGroups, setAnonymizePeopleGroups] = useState(false);
@@ -116,7 +122,9 @@ export default function SaveAndLoadPage() {
   });
 
   // Convert current state to YAML with custom flow style for leaf arrays
-  const currentYaml = generateYamlFromState(filteredState);
+  const currentYaml = generateYamlFromState(filteredState, {
+    validateContractedHours: false,
+  });
   const missingPreferredScatterDateGroups = getMissingPreferredScatterDateGroups(dateData.groups);
 
   const downloadYaml = (yamlContent: string, filenameSuffix = '') => {
@@ -132,7 +140,19 @@ export default function SaveAndLoadPage() {
   };
 
   const handleDownload = () => {
-    downloadYaml(currentYaml);
+    try {
+      const yamlContent = generateYamlFromState(filteredState, {
+        contractedHoursBoundary: 'yaml-download',
+      });
+      downloadYaml(yamlContent);
+      setContractedHoursDiagnostic(null);
+    } catch (error) {
+      if (isContractedHoursBoundaryError(error)) {
+        setContractedHoursDiagnostic(error.diagnostic);
+        return;
+      }
+      throw error;
+    }
   };
 
   const handleDownloadAnonymized = () => {
@@ -144,15 +164,27 @@ export default function SaveAndLoadPage() {
         anonymizePeopleItems,
         anonymizePeopleGroups
       });
-      downloadYaml(generateYamlFromState(anonymizedState), '-anonymized');
+      const yamlContent = generateYamlFromState(anonymizedState, {
+        contractedHoursBoundary: 'anonymized-yaml-download',
+      });
+      downloadYaml(yamlContent, '-anonymized');
+      setContractedHoursDiagnostic(null);
     } catch (error) {
+      if (isContractedHoursBoundaryError(error)) {
+        setContractedHoursDiagnostic(error.diagnostic);
+        return;
+      }
       alert(`Unable to randomize shift requests: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
   const handleCopyToClipboard = async () => {
     try {
-      await navigator.clipboard.writeText(currentYaml);
+      const yamlContent = generateYamlFromState(filteredState, {
+        contractedHoursBoundary: 'clipboard-copy',
+      });
+      await navigator.clipboard.writeText(yamlContent);
+      setContractedHoursDiagnostic(null);
       setCopied(true);
       if (copiedResetTimeoutRef.current) {
         clearTimeout(copiedResetTimeoutRef.current);
@@ -162,6 +194,10 @@ export default function SaveAndLoadPage() {
         copiedResetTimeoutRef.current = null;
       }, 2000);
     } catch (err) {
+      if (isContractedHoursBoundaryError(err)) {
+        setContractedHoursDiagnostic(err.diagnostic);
+        return;
+      }
       console.error('Failed to copy to clipboard:', err);
     }
   };
@@ -218,7 +254,14 @@ export default function SaveAndLoadPage() {
       }
 
       // Load the parsed data directly without validation, this willl create a new history state
-      loadFromYaml(parsedData);
+      const loadResult = loadFromYaml(parsedData);
+      if (!loadResult.ok) {
+        if (loadResult.diagnostic) {
+          setContractedHoursDiagnostic(loadResult.diagnostic);
+        }
+        throw new Error(loadResult.message);
+      }
+      setContractedHoursDiagnostic(null);
 
       // Close the editor
       setIsEditing(false);
@@ -257,7 +300,14 @@ export default function SaveAndLoadPage() {
         }
 
         // Load the parsed data directly without validation, this will create a new history state
-        loadFromYaml(parsedData);
+        const loadResult = loadFromYaml(parsedData);
+        if (!loadResult.ok) {
+          if (loadResult.diagnostic) {
+            setContractedHoursDiagnostic(loadResult.diagnostic);
+          }
+          throw new Error(loadResult.message);
+        }
+        setContractedHoursDiagnostic(null);
 
         alert('YAML file loaded successfully!');
       } catch (error) {
@@ -324,6 +374,12 @@ export default function SaveAndLoadPage() {
           />
         </div>
       </div>
+
+      {contractedHoursDiagnostic && (
+        <div className="mb-6">
+          <ContractedHoursValidationNotice diagnostic={contractedHoursDiagnostic} />
+        </div>
+      )}
 
       {showInstructions && instructions.length > 0 && (
         <div className="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-4">

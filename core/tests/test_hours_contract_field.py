@@ -1,13 +1,14 @@
-"""Tests for the authoring-only `hoursContract` metadata on shift counts.
+"""Tests for the authoring-only `hoursContract` marker on shift counts.
 
-`hoursContract` marks a shift count as a monthly contracted-hours contract (a
-frontend-only signal for the uncredited-leave guard). It round-trips through the
-YAML posted to `schedule()` but the solver reads nothing from it, so adding it
-must not change any scheduling behavior. These tests assert:
+`hoursContract` marks a shift count as a fixed half-hour contracted-hours
+contract (DL09 D1/D4). It is `{unit: "half-hour", policy: "exact"|"range"}` with
+`extra="forbid"`, and the solver reads nothing from it, so adding valid metadata
+must not change any scheduling behavior. Cross-field / coverage validation of
+marked contracts lives in `test_hours_contract_validation.py`; this file covers:
 
-  1. A scenario with and without `hoursContract` solves identically.
-  2. Valid `unit` values are accepted by Pydantic.
-  3. Malformed metadata is rejected (missing unit, bad enum, extra keys).
+  1. A scenario with and without a valid `hoursContract` solves identically.
+  2. Valid `{unit, policy}` metadata is accepted by Pydantic.
+  3. Malformed metadata is rejected (missing field, retired unit, extra key).
 """
 
 # This file is part of Nurse Scheduling Project, see <https://github.com/j3soon/nurse-scheduling>.
@@ -79,7 +80,7 @@ preferences:
 
 WITHOUT_FIELD = HOURS_CONTRACT_SCENARIO.format(hoursContract="")
 WITH_FIELD = HOURS_CONTRACT_SCENARIO.format(
-    hoursContract="\n    hoursContract:\n      unit: half-hour"
+    hoursContract="\n    hoursContract:\n      unit: half-hour\n      policy: exact"
 )
 
 
@@ -95,10 +96,11 @@ def test_hours_contract_field_does_not_change_scheduling():
     assert df_with.equals(df_without)
 
 
-@pytest.mark.parametrize("unit", ["half-hour", "hour"])
-def test_valid_unit_accepted(unit):
-    meta = HoursContractMetadata(unit=unit)
-    assert meta.unit == unit
+@pytest.mark.parametrize("policy", ["exact", "range"])
+def test_valid_metadata_accepted(policy):
+    meta = HoursContractMetadata(unit="half-hour", policy=policy)
+    assert meta.unit == "half-hour"
+    assert meta.policy == policy
 
 
 def test_valid_hours_contract_accepted_in_full_scenario():
@@ -109,14 +111,27 @@ def test_valid_hours_contract_accepted_in_full_scenario():
 
 def test_missing_unit_rejected():
     with pytest.raises(ValidationError):
-        HoursContractMetadata()
+        HoursContractMetadata(policy="exact")
 
 
-def test_bad_enum_unit_rejected():
+def test_missing_policy_rejected():
     with pytest.raises(ValidationError):
-        HoursContractMetadata(unit="minutes")
+        HoursContractMetadata(unit="half-hour")
+
+
+@pytest.mark.parametrize("unit", ["hour", "minute", "minutes", "half_hour"])
+def test_retired_or_bad_unit_rejected(unit):
+    # The retired "hour"/"minute" units (and any other value) are rejected:
+    # there is no compatibility branch, only the fixed "half-hour".
+    with pytest.raises(ValidationError):
+        HoursContractMetadata(unit=unit, policy="exact")
+
+
+def test_bad_policy_rejected():
+    with pytest.raises(ValidationError):
+        HoursContractMetadata(unit="half-hour", policy="flexible")
 
 
 def test_extra_nested_key_rejected():
     with pytest.raises(ValidationError):
-        HoursContractMetadata(unit="hour", precision="high")
+        HoursContractMetadata(unit="half-hour", policy="exact", precision="high")

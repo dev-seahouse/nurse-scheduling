@@ -21,6 +21,7 @@
 
 import { expect, Page } from '@playwright/test';
 import ExcelJS from 'exceljs';
+import { E2E_BACKEND_API_URL } from './constants';
 
 const STORAGE_KEY = 'nurse-scheduling-data';
 const WORKER_NAMESPACE_KEY = '__PLAYWRIGHT_WORKER_NAMESPACE__';
@@ -134,7 +135,7 @@ export async function mockOptimizeAndExport(
     });
   }
 
-  await page.route('http://localhost:8000/health', async route => {
+  await page.route(`${E2E_BACKEND_API_URL}/health`, async route => {
     if (route.request().method() !== 'GET') {
       await route.fallback();
       return;
@@ -155,7 +156,7 @@ export async function mockOptimizeAndExport(
     });
   });
 
-  await page.route('http://localhost:8000/optimize', async route => {
+  await page.route(`${E2E_BACKEND_API_URL}/optimize`, async route => {
     const request = route.request();
 
     if (request.method() !== 'POST') {
@@ -193,7 +194,7 @@ export async function mockOptimizeAndExport(
     });
   });
 
-  await page.route(`http://localhost:8000/optimize/${jobId}`, async route => {
+  await page.route(`${E2E_BACKEND_API_URL}/optimize/${jobId}`, async route => {
     if (route.request().method() === 'DELETE') {
       await route.fulfill({ status: 204 });
       return;
@@ -218,7 +219,7 @@ export async function mockOptimizeAndExport(
     });
   });
 
-  await page.route(`http://localhost:8000/optimize/${jobId}/xlsx`, async route => {
+  await page.route(`${E2E_BACKEND_API_URL}/optimize/${jobId}/xlsx`, async route => {
     const headers: Record<string, string> = {
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     };

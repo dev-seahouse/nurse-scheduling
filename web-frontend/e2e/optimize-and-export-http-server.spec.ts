@@ -20,15 +20,15 @@
 // This test is mostly AI generated.
 
 import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { expect, test } from './test';
+import { E2E_BACKEND_HOST, E2E_BACKEND_PORT } from './constants';
 import { createMockXlsxBuffer, disableModalDialogs, seedSchedulingState, setDateRange } from './helpers';
 
 test('optimize and export works against a real local HTTP server instead of Playwright route mocking', async ({ page }) => {
   /*
    * Steps:
    * 1. Seed a minimal valid schedule and confirm the optimize page starts clean.
-   * 2. Start a lightweight local HTTP server and point the page at that endpoint.
+   * 2. Start a lightweight local HTTP server at the backend URL compiled into the E2E app.
    * 3. Trigger optimize through the real browser fetch path.
    * 4. Confirm the server received the YAML and the page rendered the returned metadata.
    */
@@ -142,8 +142,7 @@ test('optimize and export works against a real local HTTP server instead of Play
     res.end(xlsxBody);
   });
 
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-  const port = (server.address() as AddressInfo).port;
+  await new Promise<void>(resolve => server.listen(E2E_BACKEND_PORT, E2E_BACKEND_HOST, resolve));
 
   try {
     await page.addInitScript(() => {
@@ -157,10 +156,6 @@ test('optimize and export works against a real local HTTP server instead of Play
     await expect(page.getByRole('heading', { name: 'Optimize and Export', exact: true })).toBeVisible();
     await expect(page.getByText('Schedule optimized and downloaded successfully!')).toHaveCount(0);
     await expect(page.getByText('Current YAML Preview')).toHaveCount(0);
-
-    await page.getByText('Double-click to add URL').dblclick();
-    await page.getByPlaceholder('https://backend.example.test').fill(`http://127.0.0.1:${port}`);
-    await page.keyboard.press('Enter');
 
     await expect(page.getByRole('button', { name: 'Optimize and Download' })).toBeEnabled();
     await page.getByRole('button', { name: 'Optimize and Download' }).click();

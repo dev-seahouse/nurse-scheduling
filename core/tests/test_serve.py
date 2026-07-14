@@ -972,6 +972,7 @@ class TestServeInternals:
         assert seen["cmd"][5:] == ["describe", "--tags", "--always", "--dirty"]
         assert seen["text"] is True
 
+
 if __name__ == "__main__":
     # Run tests with pytest
     pytest.main([__file__, "-v", "--log-cli-level=INFO"])

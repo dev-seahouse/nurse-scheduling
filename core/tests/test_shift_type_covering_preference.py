@@ -1,4 +1,5 @@
 """Tests for the ShiftTypeCoveringPreference model."""
+
 import os
 import sys
 
@@ -19,7 +20,7 @@ def test_shift_type_covering_preference_basic_construction():
     assert pref.preceptors == ["Anna"]
     assert pref.preceptees == ["Lil"]
     assert pref.shiftTypes == ["D"]
-    assert pref.weight == 1   # default
+    assert pref.weight == 1  # default
 
 
 def test_shift_type_covering_supports_description():
@@ -65,6 +66,7 @@ def test_shift_type_covering_accepts_infinity_weight():
 def test_shift_type_covering_rejects_non_infinity_floats():
     """Per project convention: float weights must be ±inf or be int."""
     import pytest
+
     with pytest.raises(ValueError):
         ShiftTypeCoveringPreference(
             preceptors=["Anna"],
@@ -77,6 +79,7 @@ def test_shift_type_covering_rejects_non_infinity_floats():
 def test_shift_type_covering_rejects_extra_fields():
     from pydantic import ValidationError
     import pytest
+
     with pytest.raises(ValidationError):
         ShiftTypeCoveringPreference(
             preceptors=["Anna"],

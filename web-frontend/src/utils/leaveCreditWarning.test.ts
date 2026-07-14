@@ -56,7 +56,7 @@ function shiftCount(overrides: Partial<ShiftCountPreference> = {}): ShiftCountPr
     person: ['A'],
     countDates: [ALL],
     countShiftTypes: [ALL],
-    hoursContract: { unit: 'half-hour' },
+    hoursContract: { unit: 'half-hour', policy: 'exact' },
     expression: 'x = T',
     target: 288,
     weight: 1,

@@ -144,7 +144,9 @@ preferences:
     target: 320
     weight: .inf
     # Arms the frontend uncredited-leave guard: this count is a monthly-hours
-    # contract, coefficients are in half-hour units. Authoring-only metadata;
+    # contract, coefficients are in half-hour units, and `policy: exact` binds
+    # the `x = T` / scalar-target / .inf encoding above. Authoring-only metadata;
     # the solver accepts-and-ignores it, so the solve is unchanged.
     hoursContract:
       unit: half-hour
+      policy: exact

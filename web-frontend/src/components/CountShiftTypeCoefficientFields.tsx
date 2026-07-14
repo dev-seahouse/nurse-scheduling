@@ -17,18 +17,15 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { useState } from 'react';
 import NumberInput from '@/components/NumberInput';
 import { OrderedEntry, sortIdsByEntryOrder } from '@/utils/entityOrdering';
-import { Group, HoursContractUnit, Item } from '@/types/scheduling';
+import { Group, Item } from '@/types/scheduling';
 import {
   DraftShiftCountTypeCoefficient,
   autoFillCoefficientsFromDurations,
   getCoefficientForShiftType,
   getCoefficientShiftTypeIds,
   updateCoefficientPair,
-  getUnitMinutes,
-  HOURS_CONTRACT_UNITS,
 } from '@/utils/countShiftTypeCoefficients';
 
 interface CountShiftTypeCoefficientFieldsProps {
@@ -38,24 +35,10 @@ interface CountShiftTypeCoefficientFieldsProps {
   shiftTypeData: { items: Item[]; groups: Group[] };
   errorsById?: Record<string, string>;
   label?: string;
-  // Show the "auto-fill from durations" control + unit toggle. Not offered for
+  // Show the "auto-fill from durations" control. Coefficients are filled at the
+  // one fixed half-hour unit (DL09 D1) — there is no unit picker. Not offered for
   // Shift Type Requirements (coefficients there are staffing weights, not hours).
   enableDurationAutofill?: boolean;
-  // Temporarily disable the duration auto-fill (button) even when enabled — used
-  // while a marked count's contract unit is still being declared, so auto-fill
-  // can't emit values against a not-yet-confirmed (prefilled) unit.
-  autofillDisabled?: boolean;
-  // When the count is a marked hours contract, its contract unit is passed in and
-  // becomes the single unit control: it drives auto-fill and the component's
-  // private unit toggle is hidden (the contract owns the unit). Undefined = an
-  // unmarked count, which keeps the private toggle.
-  controlledUnit?: HoursContractUnit;
-  // The unmarked private toggle can be lifted to the parent so it knows how the
-  // coefficients were authored (needed at mark-time). When `privateUnit` is
-  // provided the toggle is controlled; otherwise the component keeps its own
-  // state so callers that don't care are unaffected.
-  privateUnit?: HoursContractUnit;
-  onPrivateUnitChange?: (unit: HoursContractUnit) => void;
   onChange: (coefficients: DraftShiftCountTypeCoefficient[], changedShiftTypeId: string) => void;
 }
 
@@ -67,25 +50,8 @@ export function CountShiftTypeCoefficientFields({
   errorsById = {},
   label = 'Count Shift Type',
   enableDurationAutofill = false,
-  autofillDisabled = false,
-  controlledUnit,
-  privateUnit,
-  onPrivateUnitChange,
   onChange,
 }: CountShiftTypeCoefficientFieldsProps) {
-  const [internalPrivateUnit, setInternalPrivateUnit] = useState<HoursContractUnit>(HOURS_CONTRACT_UNITS[0]);
-  const effectivePrivateUnit = privateUnit ?? internalPrivateUnit;
-  const setPrivateUnit = (unit: HoursContractUnit) => {
-    if (onPrivateUnitChange) {
-      onPrivateUnitChange(unit);
-    } else {
-      setInternalPrivateUnit(unit);
-    }
-  };
-  // A marked hours contract dictates the unit; only unmarked counts fall back to
-  // the private toggle.
-  const activeUnit = controlledUnit ?? effectivePrivateUnit;
-  const unitMinutes = getUnitMinutes(activeUnit);
   const singularLabel = label.toLowerCase();
   const emptyHint = `Coefficients are not needed when no ${singularLabel} is selected.`;
   const coefficientShiftTypeIds = getCoefficientShiftTypeIds(selectedShiftTypeIds, shiftTypeData);
@@ -100,41 +66,18 @@ export function CountShiftTypeCoefficientFields({
         <div className="flex flex-wrap items-center gap-2 mb-3">
           <button
             type="button"
-            disabled={autofillDisabled}
             onClick={() =>
               onChange(
-                autoFillCoefficientsFromDurations(coefficientShiftTypeIds, coefficients, shiftTypeData, unitMinutes),
+                autoFillCoefficientsFromDurations(coefficientShiftTypeIds, coefficients, shiftTypeData),
                 ''
               )
             }
-            className={`px-3 py-1.5 text-sm font-medium border rounded-lg transition-colors ${
-              autofillDisabled
-                ? 'text-blue-300 bg-blue-50 border-blue-100 cursor-not-allowed'
-                : 'text-blue-700 bg-blue-50 border-blue-200 hover:bg-blue-100'
-            }`}
+            className="px-3 py-1.5 text-sm font-medium border rounded-lg transition-colors text-blue-700 bg-blue-50 border-blue-200 hover:bg-blue-100"
           >
             Auto-fill from durations
           </button>
-          {!controlledUnit && (
-            <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden" role="group" aria-label="Coefficient unit">
-              {HOURS_CONTRACT_UNITS.map(unit => (
-                <button
-                  key={unit}
-                  type="button"
-                  onClick={() => setPrivateUnit(unit)}
-                  className={`px-3 py-1.5 text-sm transition-colors ${
-                    activeUnit === unit
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-white text-gray-700 hover:bg-gray-50'
-                  }`}
-                >
-                  {unit}
-                </button>
-              ))}
-            </div>
-          )}
           <span className="text-xs text-gray-500 italic">
-            Fills coefficients from each shift&apos;s duration (LEAVE counts 8h); the target stays what you type.
+            Fills coefficients from each shift&apos;s duration in half-hour units (LEAVE counts 8h); the target stays what you type.
           </span>
         </div>
       )}

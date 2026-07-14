@@ -496,10 +496,7 @@ def _prototype_yaml_path() -> str:
 def _nurse_worked_total(df, person_row: int, num_dates: int) -> int:
     """Sum the half-hour coefficients of nurse `person_row`'s solved worked
     shifts. LEAVE and OFF cells contribute 0 (they are not worked shifts)."""
-    return sum(
-        _PROTOTYPE_WORKED_COEFFICIENTS.get(_cell(df, person_row, c), 0)
-        for c in range(num_dates)
-    )
+    return sum(_PROTOTYPE_WORKED_COEFFICIENTS.get(_cell(df, person_row, c), 0) for c in range(num_dates))
 
 
 def test_r4_prototype_160h_leave_credit_is_load_bearing():
@@ -531,15 +528,9 @@ def test_r4_prototype_160h_leave_credit_is_load_bearing():
     mutated = False
     for pref in data["preferences"]:
         count_shift_types = pref.get("countShiftTypes")
-        if (
-            pref.get("type") == "shift count"
-            and isinstance(count_shift_types, list)
-            and "LEAVE" in count_shift_types
-        ):
+        if pref.get("type") == "shift count" and isinstance(count_shift_types, list) and "LEAVE" in count_shift_types:
             pref["countShiftTypes"] = [s for s in count_shift_types if s != "LEAVE"]
-            pref["countShiftTypeCoefficients"] = [
-                c for c in pref["countShiftTypeCoefficients"] if c[0] != "LEAVE"
-            ]
+            pref["countShiftTypeCoefficients"] = [c for c in pref["countShiftTypeCoefficients"] if c[0] != "LEAVE"]
             mutated = True
     assert mutated, "expected a 160h shift-count listing LEAVE to mutate"
 

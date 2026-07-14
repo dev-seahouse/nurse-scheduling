@@ -27,7 +27,11 @@ import { isReservedKeyword, API_VERSION, ALL } from '@/utils/keywords';
 import { buildSingaporeHolidayGroups, isSingaporeHolidayRangeSupported, SingaporeHolidayEntry } from '@/utils/singaporeHolidays';
 import { ERROR_SHOULD_NOT_HAPPEN } from '@/constants/errors';
 import { getUniqueCopyLabel } from '@/utils/duplicateLabels';
-import { parseHoursContract } from '@/utils/countShiftTypeCoefficients';
+import { collectStructuralImportErrors, canonicalizeWorkingTime } from '@/utils/schedulingStructuralBoundary';
+import {
+  ContractedHoursDiagnostic,
+  validateContractedHoursBoundary,
+} from '@/utils/contractedHoursBoundary';
 import { getOrderedEntries } from '@/utils/entityOrdering';
 import { hasNestedReferenceIds } from '@/utils/referenceIds';
 import { generateExportLayoutConfig, normalizeExportConfigOrder, normalizeExportExtraColumnsOrder, normalizeExportExtraRowsOrder, normalizeExportFormattingOrder } from './schedulingExportConfig';
@@ -44,6 +48,14 @@ export { generateExportLayoutConfig } from './schedulingExportConfig';
 export type { SchedulingState } from './schedulingState';
 
 export type SchedulingDataValue = ReturnType<typeof useSchedulingDataInternal>;
+
+export type SchedulingLoadResult =
+  | { ok: true }
+  | {
+      ok: false;
+      message: string;
+      diagnostic?: ContractedHoursDiagnostic;
+    };
 
 // The durable shift-type working-time fields the editor authors (WT4). Passing a
 // value to addItem/updateItem fully specifies these four fields on a shift type;
@@ -63,6 +75,55 @@ function pickDefinedWorkingTime(workingTime: ShiftTypeWorkingTime): ShiftTypeWor
   if (workingTime.endTime) picked.endTime = workingTime.endTime;
   if (workingTime.restMinutes != null) picked.restMinutes = workingTime.restMinutes;
   return picked;
+}
+
+// Re-sort a group's members into canonical item order (FR-RI-16) while keeping
+// any member that names another group — a nested group reference from imported
+// advanced backend syntax (FR-RI-02/17) — in place. Concrete (item) members are
+// refilled, in canonical item order, into the slots they already occupy; nested
+// group members hold their positions, so an item rename/add/reorder never
+// reshuffles or drops a nested reference. Members that are neither an item nor a
+// known group (genuinely dangling ids) are omitted, so the callers'
+// length-mismatch guard still fires for inconsistent input. For item-only groups
+// the result is byte-identical to the previous `items.filter(...)` re-sort.
+//
+// Ordering is occurrence-aware: a backend-valid imported group may repeat a
+// concrete id (e.g. ["D", "D", "Nested"]), so each concrete id is emitted as
+// many times as it appears rather than once per unique item — otherwise the
+// refill would run past the unique item list and write `undefined` into a
+// repeated slot (which serializes as YAML `null`).
+function sortMembersByItemOrder(memberIds: string[], items: Item[], groups: Group[]): string[] {
+  const itemIds = new Set(items.map(item => item.id));
+  const groupIds = new Set(groups.map(group => group.id));
+
+  // Count concrete-member occurrences so duplicates survive the re-sort.
+  const concreteCounts = new Map<string, number>();
+  for (const memberId of memberIds) {
+    if (itemIds.has(memberId)) {
+      concreteCounts.set(memberId, (concreteCounts.get(memberId) ?? 0) + 1);
+    }
+  }
+  // Concrete members in canonical item order, each repeated as often as it occurs.
+  const orderedItemMembers: string[] = [];
+  for (const item of items) {
+    const count = concreteCounts.get(item.id) ?? 0;
+    for (let occurrence = 0; occurrence < count; occurrence++) {
+      orderedItemMembers.push(item.id);
+    }
+  }
+
+  let cursor = 0;
+  const sortedMembers: string[] = [];
+  for (const memberId of memberIds) {
+    if (itemIds.has(memberId)) {
+      sortedMembers.push(orderedItemMembers[cursor++]);
+    } else if (groupIds.has(memberId)) {
+      sortedMembers.push(memberId);
+    }
+    // Otherwise the id is neither a known item nor a known group; drop it so the
+    // caller's length check reports the inconsistency instead of persisting it.
+  }
+  return sortedMembers;
 }
 
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
@@ -270,10 +331,8 @@ export function useSchedulingDataInternal() {
         return group;
       }
       const allMembers = [...group.members, id];
-      // Sort members based on updated items order
-      const sortedMembers = newItems
-        .filter(item => allMembers.includes(item.id))
-        .map(item => item.id);
+      // Sort members based on updated items order, preserving nested group members
+      const sortedMembers = sortMembersByItemOrder(allMembers, newItems, data.groups);
       if (allMembers.length !== sortedMembers.length) {
         console.error(`All members length ${allMembers.length} does not match sorted members length ${sortedMembers.length}. ${ERROR_SHOULD_NOT_HAPPEN}`);
         return group;
@@ -302,10 +361,8 @@ export function useSchedulingDataInternal() {
       return;
     }
 
-    // Sort members based on items order
-    const sortedMembers = data.items
-      .filter(item => memberIds.includes(item.id))
-      .map(item => item.id);
+    // Sort members based on items order, preserving nested group members
+    const sortedMembers = sortMembersByItemOrder(memberIds, data.items, data.groups);
 
     if (memberIds.length !== sortedMembers.length) {
       console.error(`Member IDs length ${memberIds.length} does not match sorted members length ${sortedMembers.length}. ${ERROR_SHOULD_NOT_HAPPEN}`);
@@ -448,18 +505,32 @@ export function useSchedulingDataInternal() {
 
     // Always update group memberships to reflect the new ID
     const updatedGroups = data.groups.map(group => {
-      // Get current members excluding the edited item
-      const otherMembers = group.members.filter(id => id !== oldId);
+      // How many times the renamed item currently appears in this group. An
+      // imported backend-valid group may repeat a concrete id, so the rename
+      // must preserve that occurrence count rather than collapse it to one.
+      const occurrences = group.members.filter(id => id === oldId).length;
 
-      // Add the item if they should be in this group
-      const allMembers = groupIds
-        ? (groupIds.includes(group.id) ? [...otherMembers, newId] : otherMembers)
-        : (group.members.includes(oldId) ? [...otherMembers, newId] : otherMembers);
+      // Whether the item should remain a member of this group after the edit.
+      // The full editor supplies the complete target set via `groupIds`; the
+      // direct path leaves membership unchanged.
+      const shouldBeMember = groupIds
+        ? groupIds.includes(group.id)
+        : occurrences > 0;
 
-      // Sort members based on updated items order
-      const sortedMembers = updatedItems
-        .filter(item => allMembers.includes(item.id))
-        .map(item => item.id);
+      let allMembers: string[];
+      if (!shouldBeMember) {
+        // Explicit removal (or never a member): drop every occurrence.
+        allMembers = group.members.filter(id => id !== oldId);
+      } else if (occurrences > 0) {
+        // Rename each existing occurrence in place, preserving the count.
+        allMembers = group.members.map(id => id === oldId ? newId : id);
+      } else {
+        // Newly added to this group via the full editor: add one occurrence.
+        allMembers = [...group.members, newId];
+      }
+
+      // Sort members based on updated items order, preserving nested group members
+      const sortedMembers = sortMembersByItemOrder(allMembers, updatedItems, data.groups);
 
       if (allMembers.length !== sortedMembers.length) {
         console.error(`All members length ${allMembers.length} does not match sorted members length ${sortedMembers.length}. ${ERROR_SHOULD_NOT_HAPPEN}`);
@@ -500,11 +571,9 @@ export function useSchedulingDataInternal() {
       return;
     }
 
-    // Sort members based on items order
+    // Sort members based on items order, preserving nested group members
     const sortedMembers = members
-      ? data.items
-          .filter(item => members.includes(item.id))
-          .map(item => item.id)
+      ? sortMembersByItemOrder(members, data.items, data.groups)
       : group.members;
 
     if (members && members.length !== sortedMembers.length) {
@@ -601,12 +670,10 @@ export function useSchedulingDataInternal() {
     data: ItemGroupEditorPageData,
     reorderedItems: Item[]
   ): void => {
-    // Sort group members based on items order
+    // Sort group members based on items order, preserving nested group members
     const updatedGroups = data.groups.map(group => ({
       ...group,
-      members: reorderedItems
-        .filter(item => group.members.includes(item.id))
-        .map(item => item.id)
+      members: sortMembersByItemOrder(group.members, reorderedItems, data.groups)
     }));
 
     const newData = { items: reorderedItems, groups: updatedGroups };
@@ -802,9 +869,9 @@ export function useSchedulingDataInternal() {
     updateExportExtraRows(duplicatedExtraRows);
   };
 
-  const loadFromYaml = (yamlData: unknown) => {
-    // Create new state from YAML data without validation
-    // TODO: Add validation
+  const loadFromYaml = (yamlData: unknown): SchedulingLoadResult => {
+    // Build a complete source-ordered candidate for the structural and
+    // Contracted Hours semantic gates before normalizing accepted state.
     const importWarnings: string[] = [];
 
     // Cast to partial SchedulingState to access properties safely
@@ -849,6 +916,28 @@ export function useSchedulingDataInternal() {
     convertIdsToString(newState.people.groups);
     convertIdsToString(newState.shiftTypes.items);
     convertIdsToString(newState.shiftTypes.groups);
+    // Validate the source-ordered candidate before any preference/export
+    // normalization or working-time canonicalization. Rejected imports must
+    // report the preference indices the user sees in their YAML.
+    const structuralErrors = collectStructuralImportErrors(newState);
+    if (structuralErrors.length > 0) {
+      setYamlImportWarnings([...new Set(structuralErrors)]);
+      return { ok: false, message: structuralErrors[0] };
+    }
+
+    const contractedHoursValidation = validateContractedHoursBoundary(
+      newState,
+      'yaml-import',
+    );
+    if (!contractedHoursValidation.ok) {
+      const { diagnostic } = contractedHoursValidation;
+      const message = `${diagnostic.message} (${diagnostic.path}) ${diagnostic.repair}`;
+      setYamlImportWarnings([message]);
+      return { ok: false, message, diagnostic };
+    }
+
+    // Both gates accepted the candidate. The remaining import normalization is
+    // now allowed to mutate it into canonical frontend state before commit.
     const stringifyReferenceIds = (value: unknown, isDate: boolean = false): unknown => {
       if (Array.isArray(value)) {
         return value.map(item => stringifyReferenceIds(item, isDate));
@@ -927,19 +1016,10 @@ export function useSchedulingDataInternal() {
           coefficient
         ]);
       }
-      if (pref.type === SHIFT_COUNT && 'hoursContract' in pref && pref.hoursContract !== undefined) {
-        // Accept only the exact `{ unit: "half-hour" | "hour" }` shape. Drop
-        // malformed/empty/extra-key metadata rather than arm the guard on garbage.
-        const validated = parseHoursContract(pref.hoursContract);
-        if (validated) {
-          pref.hoursContract = validated;
-        } else {
-          delete pref.hoursContract;
-          importWarnings.push(
-            `preferences[${preferenceIndex}].hoursContract is not a valid hours contract ({ unit: "half-hour" | "hour" }). It was dropped.`
-          );
-        }
-      }
+      // The hours-contract marker was validated at the source-order boundary
+      // above. An invalid marker (retired "hour"/"minute" unit or missing/extra
+      // keys) rejects the
+      // entire import — it is never deleted while the count commits as generic.
       if ('people1' in pref && pref.people1) {
         pref.people1 = normalizeReferenceIdsForImport(pref.people1, `preferences[${preferenceIndex}].people1`) as typeof pref.people1;
       }
@@ -958,11 +1038,18 @@ export function useSchedulingDataInternal() {
           addUnsupportedFrontendShapeWarning(`preferences[${preferenceIndex}].shiftType`);
         }
       } else if (pref.type === SHIFT_COUNT) {
-        if (Array.isArray(pref.expression)) {
-          addUnsupportedFrontendShapeWarning(`preferences[${preferenceIndex}].expression`);
-        }
-        if (Array.isArray(pref.target)) {
-          addUnsupportedFrontendShapeWarning(`preferences[${preferenceIndex}].target`);
+        // A marked contract legitimately carries the Range array shape
+        // (`[x >= T, x <= T]` / `[min, max]`), so it is expected, not advisory.
+        // An UNMARKED array count is the generic advanced-rule fallback (WT6):
+        // it is preserved losslessly and never flattened; it renders read-only
+        // and routes editing to YAML. WT3 keeps the opaque value intact through
+        // all wire/state operations and notes it once on import.
+        const isMarked = 'hoursContract' in pref && pref.hoursContract !== undefined;
+        if (!isMarked && (Array.isArray(pref.expression) || Array.isArray(pref.target))) {
+          importWarnings.push(
+            `preferences[${preferenceIndex}] is an advanced shift count with a list ` +
+            `expression/target. It was preserved and is edited as raw YAML in the web UI.`
+          );
         }
       }
     });
@@ -1006,6 +1093,7 @@ export function useSchedulingDataInternal() {
     });
     newState.preferences = normalizePreferencesOrder(newState.preferences, newState);
     newState.export = normalizeExportConfigOrder(newState.export, newState);
+    canonicalizeWorkingTime(newState.shiftTypes.items);
     setYamlImportWarnings([...new Set(importWarnings)]);
 
     // Add to history and update state
@@ -1014,6 +1102,7 @@ export function useSchedulingDataInternal() {
       saveStateToStorage(newHistoryState);
       return newHistoryState;
     });
+    return { ok: true };
   };
 
   const effectiveExportData =

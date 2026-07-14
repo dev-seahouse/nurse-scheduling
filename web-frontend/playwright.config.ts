@@ -20,6 +20,7 @@
 // This test is mostly AI generated.
 
 import { defineConfig, devices } from '@playwright/test';
+import { E2E_BACKEND_API_URL } from './e2e/constants';
 
 // Use 13000 for E2E coverage to avoid port conflict with the local dev server (3000).
 const e2ePort = process.env.E2E_COVERAGE === '1' ? 13000 : 3000;
@@ -45,7 +46,7 @@ export default defineConfig({
     command: `bun run build:e2e && bunx serve@latest out -l ${e2ePort}`,
     env: {
       E2E_COVERAGE: process.env.E2E_COVERAGE ?? '0',
-      NEXT_PUBLIC_DISABLE_HOSTED_OPTIMIZE_API: '1',
+      NEXT_PUBLIC_BACKEND_API_URL: E2E_BACKEND_API_URL,
     },
     url: e2eBaseURL,
     reuseExistingServer: !process.env.CI && process.env.E2E_COVERAGE !== '1',

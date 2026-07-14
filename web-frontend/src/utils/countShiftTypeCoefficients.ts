@@ -17,48 +17,49 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { Group, HoursContract, HoursContractUnit, Item, ShiftCountTypeCoefficient } from '@/types/scheduling';
+import { HoursContract, HoursContractPolicy, Group, Item, ShiftCountTypeCoefficient } from '@/types/scheduling';
 import { LEAVE, LEAVE_CREDIT_MINUTES } from '@/utils/keywords';
 
 export type DraftShiftCountTypeCoefficient = [string, number | string];
 
-// Coefficient auto-fill unit: how many minutes one coefficient unit represents.
-// Half-hour units keep 12.5h shifts integer (25); hour units are coarser.
+// The one fixed contract unit (DL09 D1): a half-hour is 30 minutes. There is no
+// unit picker, conversion, or "hour"/"minute" fallback — the single owner of the
+// unit ↔ minutes relationship so it can never drift.
 export const HALF_HOUR_UNIT_MINUTES = 30;
-export const HOUR_UNIT_MINUTES = 60;
 
-// Single owner of the hours-contract unit ↔ minutes conversion. Every place that
-// needs to know how many minutes a unit represents, or which units are valid,
-// goes through here so the enum and its mapping can never drift apart.
-const UNIT_MINUTES_BY_UNIT: Record<HoursContractUnit, number> = {
-  'half-hour': HALF_HOUR_UNIT_MINUTES,
-  'hour': HOUR_UNIT_MINUTES,
-};
+// The LEAVE credit as a half-hour coefficient: a paid leave day credits
+// LEAVE_CREDIT_MINUTES (8h) ⇒ 16 half-hour units (DL09 D6 / FR-CH-32). Single
+// owner so the guard fix, its preview, and derivation can never disagree.
+export const LEAVE_CREDIT_HALF_HOUR_UNITS = Math.round(LEAVE_CREDIT_MINUTES / HALF_HOUR_UNIT_MINUTES);
 
-export const HOURS_CONTRACT_UNITS = Object.keys(UNIT_MINUTES_BY_UNIT) as HoursContractUnit[];
+// The structural result of interpreting an imported `hoursContract` value. WT3
+// does STRUCTURAL parsing only (DL09 D13): it accepts exactly the fixed marker
+// `{ unit: "half-hour", policy: "exact" | "range" }` and rejects everything else
+// (retired "hour"/"minute" units, missing/extra keys, wrong types) with a clear
+// reason. It does NOT validate that the count's expression/target/weight match
+// the policy — that inbound semantic gate is WT7.
+export type HoursContractParseResult =
+  | { ok: true; value: HoursContract }
+  | { ok: false; reason: string };
 
-export function getUnitMinutes(unit: HoursContractUnit): number {
-  return UNIT_MINUTES_BY_UNIT[unit];
-}
+const HOURS_CONTRACT_POLICIES: readonly HoursContractPolicy[] = ['exact', 'range'];
 
-export function isHoursContractUnit(value: unknown): value is HoursContractUnit {
-  return typeof value === 'string' && (HOURS_CONTRACT_UNITS as readonly string[]).includes(value);
-}
-
-// Runtime guard for an imported hours-contract value. Accepts ONLY the exact
-// shape `{ unit: "half-hour" | "hour" }` — empty objects, unknown units, and
-// extra keys are rejected (returns undefined) so callers can drop the field
-// rather than arm anything on malformed metadata.
-export function parseHoursContract(value: unknown): HoursContract | undefined {
+export function parseHoursContract(value: unknown): HoursContractParseResult {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return undefined;
+    return { ok: false, reason: 'hoursContract must be an object with unit and policy' };
   }
-  const keys = Object.keys(value);
-  if (keys.length !== 1 || keys[0] !== 'unit') {
-    return undefined;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (record.unit !== 'half-hour') {
+    return { ok: false, reason: 'hoursContract.unit must be "half-hour"' };
   }
-  const { unit } = value as { unit: unknown };
-  return isHoursContractUnit(unit) ? { unit } : undefined;
+  if (!HOURS_CONTRACT_POLICIES.includes(record.policy as HoursContractPolicy)) {
+    return { ok: false, reason: 'hoursContract.policy must be "exact" or "range"' };
+  }
+  if (keys.length !== 2) {
+    return { ok: false, reason: 'hoursContract must have exactly the keys unit and policy' };
+  }
+  return { ok: true, value: { unit: 'half-hour', policy: record.policy as HoursContractPolicy } };
 }
 
 export interface ShiftCountTypeCoefficientValidation {
@@ -113,19 +114,21 @@ export function syncCoefficientPairs(
   return coefficientShiftTypeIds.map(id => [id, getCoefficientForShiftType(coefficients, id)]);
 }
 
+// Fill coefficients from each shift's paid working minutes at the fixed half-hour
+// unit (durationMinutes / 30; LEAVE credits 16). There is no unit parameter or
+// picker (DL09 D1). Group ids and shift types without a duration keep their
+// current value. Marked-contract derivation and Refresh are WT5/WT6; this stays
+// a generic convenience for the coefficient editor and export count columns.
 export function autoFillCoefficientsFromDurations(
   coefficientShiftTypeIds: string[],
   currentCoefficients: DraftShiftCountTypeCoefficient[],
-  shiftTypeData: { items: Item[]; groups: Group[] },
-  unitMinutes: number
+  shiftTypeData: { items: Item[]; groups: Group[] }
 ): DraftShiftCountTypeCoefficient[] {
   const durationById = new Map(shiftTypeData.items.map(item => [item.id, item.durationMinutes]));
   return coefficientShiftTypeIds.map((id): DraftShiftCountTypeCoefficient => {
-    // LEAVE carries a fixed credit; worked shift types use their durationMinutes.
-    // Group ids and shift types without a duration keep their current value.
     const durationMinutes = id === LEAVE ? LEAVE_CREDIT_MINUTES : durationById.get(id);
-    if (typeof durationMinutes === 'number' && unitMinutes > 0) {
-      return [id, Math.max(1, Math.round(durationMinutes / unitMinutes))];
+    if (typeof durationMinutes === 'number') {
+      return [id, Math.max(1, Math.round(durationMinutes / HALF_HOUR_UNIT_MINUTES))];
     }
     return [id, getCoefficientForShiftType(currentCoefficients, id)];
   });
@@ -161,11 +164,11 @@ export function upsertCoefficientPair(
   );
 }
 
-// The LEAVE coefficient in a given contract unit: a paid leave day credits
-// LEAVE_CREDIT_MINUTES (8h), so 16 half-hour units or 8 hour units. Single owner
-// of this conversion so the guard fix and its preview can never disagree.
-export function getLeaveCreditCoefficient(unit: HoursContractUnit): number {
-  return Math.max(1, Math.round(LEAVE_CREDIT_MINUTES / getUnitMinutes(unit)));
+// The LEAVE coefficient for a marked contract: always 16 half-hour units
+// (LEAVE_CREDIT_HALF_HOUR_UNITS). Kept as a function so callers read intent, not
+// a bare constant, and so the guard fix and its preview share one source.
+export function getLeaveCreditCoefficient(): number {
+  return LEAVE_CREDIT_HALF_HOUR_UNITS;
 }
 
 function getCoefficientOverlapError(

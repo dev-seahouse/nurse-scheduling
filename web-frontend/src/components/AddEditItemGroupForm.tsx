@@ -50,21 +50,7 @@ interface AddEditItemGroupFormProps<T extends Item, G extends Group> {
   onMemberToggle: (id: string) => void;
   onSave: () => void;
   onCancel: () => void;
-  // Shift-type items only: optional, durable working-time authoring — start/end
-  // clock times plus rest (h + min). Paid working minutes (span − rest) are
-  // derived and surfaced via workingTimeSummary; workingTimeError carries the
-  // inline validation message when the inputs cannot yield a positive result.
-  showWorkingTimeField?: boolean;
-  startTimeValue?: string;
-  endTimeValue?: string;
-  restHoursValue?: string;
-  restMinutesValue?: string;
-  workingTimeSummary?: string;
-  workingTimeError?: string;
-  onStartTimeChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  onEndTimeChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  onRestHoursChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  onRestMinutesChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  itemDetails?: React.ReactNode;
 }
 
 export function AddEditItemGroupForm<T extends Item, G extends Group>({
@@ -82,91 +68,9 @@ export function AddEditItemGroupForm<T extends Item, G extends Group>({
   onMemberToggle,
   onSave,
   onCancel,
-  showWorkingTimeField = false,
-  startTimeValue = '',
-  endTimeValue = '',
-  restHoursValue = '',
-  restMinutesValue = '',
-  workingTimeSummary = '',
-  workingTimeError = '',
-  onStartTimeChange,
-  onEndTimeChange,
-  onRestHoursChange,
-  onRestMinutesChange,
+  itemDetails,
 }: AddEditItemGroupFormProps<T, G>) {
   const isItem = draft.isItem;
-  const workingTimeInputClasses = 'block w-24 px-3 py-2 text-sm text-gray-900 bg-white border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:border-blue-500 focus:ring-blue-200 hover:border-gray-400';
-  const workingTimeField = showWorkingTimeField && isItem ? (
-    <div className="space-y-2">
-      <label className="block text-sm font-medium text-gray-700">
-        Working time
-      </label>
-      <div className="flex flex-wrap items-center gap-4">
-        <div className="flex items-center gap-1.5">
-          <label htmlFor="shift-type-start-time" className="text-sm text-gray-600">Start</label>
-          <input
-            id="shift-type-start-time"
-            type="time"
-            value={startTimeValue}
-            onChange={onStartTimeChange}
-            aria-label="Start time"
-            className={workingTimeInputClasses}
-          />
-        </div>
-        <div className="flex items-center gap-1.5">
-          <label htmlFor="shift-type-end-time" className="text-sm text-gray-600">End</label>
-          <input
-            id="shift-type-end-time"
-            type="time"
-            value={endTimeValue}
-            onChange={onEndTimeChange}
-            aria-label="End time"
-            className={workingTimeInputClasses}
-          />
-        </div>
-      </div>
-      <div className="flex items-center gap-3">
-        <span className="text-sm text-gray-600">Rest</span>
-        <div className="flex items-center gap-1.5">
-          <input
-            id="shift-type-rest-hours"
-            type="number"
-            min="0"
-            step="1"
-            value={restHoursValue}
-            onChange={onRestHoursChange}
-            placeholder="e.g. 1"
-            aria-label="Rest hours"
-            className={workingTimeInputClasses}
-          />
-          <span className="text-sm text-gray-600">hours</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <input
-            id="shift-type-rest-minutes"
-            type="number"
-            min="0"
-            max="59"
-            step="1"
-            value={restMinutesValue}
-            onChange={onRestMinutesChange}
-            placeholder="e.g. 30"
-            aria-label="Rest minutes"
-            className={workingTimeInputClasses}
-          />
-          <span className="text-sm text-gray-600">min</span>
-        </div>
-      </div>
-      {workingTimeError ? (
-        <p className="text-xs text-red-600">{workingTimeError}</p>
-      ) : workingTimeSummary ? (
-        <p className="text-xs font-medium text-gray-700">Working time: {workingTimeSummary}</p>
-      ) : null}
-      <p className="text-xs text-gray-500 italic">
-        Optional. Paid working time (start to end, minus rest) feeds &quot;auto-fill from durations&quot; in Shift Counts; not sent to the solver.
-      </p>
-    </div>
-  ) : null;
   const title = `${mode === Mode.ADDING ? 'Add New' : 'Edit'} ${isItem ? itemLabel : "Group"}`;
   const placeholder = `Enter ${isItem ? itemLabel.toLowerCase() : "group"} ID`;
   const filteredItems = filterItemGroups(items) as T[];
@@ -224,7 +128,7 @@ export function AddEditItemGroupForm<T extends Item, G extends Group>({
         >
           {!draft.isItem ? memberSelector : (
             <>
-              {workingTimeField}
+              {itemDetails}
               {groupSelector}
             </>
           )}

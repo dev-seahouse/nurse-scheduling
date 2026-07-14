@@ -24,8 +24,8 @@ from dataclasses import replace
 from collections.abc import Callable
 from datetime import timedelta
 
-from . import exporter, preference_types
-from .constants import ALL, OFF, OFF_sid, LEAVE, LEAVE_sid, MAP_DATE_KEYWORD_TO_FILTER, MAP_WEEKDAY_TO_STR
+from . import exporter, group_map, preference_types
+from .constants import ALL, MAP_DATE_KEYWORD_TO_FILTER, MAP_WEEKDAY_TO_STR
 from .context import Context
 from .utils import parse_dates
 from .loader import load_data
@@ -82,20 +82,10 @@ def schedule(
     ctx.n_people = len(ctx.people.items)
     ctx.dates.items = [ctx.dates.range.startDate + timedelta(days=d) for d in range(ctx.n_days)]
 
-    # Map shift type ID to shift type index
-    for s in range(ctx.n_shift_types):
-        ctx.map_sid_s[ctx.shiftTypes.items[s].id] = [s]
-    # Add shift type ALL, OFF, and LEAVE keywords.
-    # ALL intentionally expands to worked shift types only (it excludes both
-    # the OFF and LEAVE day-states).
-    ctx.map_sid_s[ALL] = list(range(ctx.n_shift_types))
-    ctx.map_sid_s[OFF] = [OFF_sid]
-    ctx.map_sid_s[LEAVE] = [LEAVE_sid]
-    # Map shift type group ID to list of shift type indices
-    for g in range(len(ctx.shiftTypes.groups)):
-        group = ctx.shiftTypes.groups[g]
-        # Flatten and deduplicate shift type indices for the group
-        ctx.map_sid_s[group.id] = sorted(set().union(*[ctx.map_sid_s[sid] for sid in group.members]))
+    # Map shift type ID (items, then ALL/OFF/LEAVE keywords, then groups) to
+    # indices. Built through the shared helper so scenario-root contracted-hours
+    # validation expands selectors through the identical ordered group map.
+    ctx.map_sid_s.update(group_map.build_shift_type_index_map(ctx.shiftTypes.items, ctx.shiftTypes.groups))
     # Map person ID to person index
     for p in range(ctx.n_people):
         ctx.map_pid_p[ctx.people.items[p].id] = [p]

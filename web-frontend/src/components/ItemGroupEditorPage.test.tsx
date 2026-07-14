@@ -37,6 +37,7 @@ function ItemGroupEditorHarness({
   extraButtons,
   children,
   dataType = DataType.PEOPLE,
+  showState = false,
 }: {
   initialData?: ItemGroupEditorPageData;
   itemsReadOnly?: boolean;
@@ -45,6 +46,7 @@ function ItemGroupEditorHarness({
   extraButtons?: ReactNode;
   children?: ReactNode;
   dataType?: DataType;
+  showState?: boolean;
 }) {
   const [mode, setMode] = useState(Mode.NORMAL);
   const [data, setData] = useState<ItemGroupEditorPageData>({
@@ -217,6 +219,7 @@ function ItemGroupEditorHarness({
       >
         {children}
       </ItemGroupEditorPage>
+      {showState ? <output data-testid="harness-state">{JSON.stringify(data)}</output> : null}
     </UnsavedEditingStateProvider>
   );
 }
@@ -1049,71 +1052,286 @@ describe('ItemGroupEditorPage', () => {
 });
 
 describe('ItemGroupEditorPage shift-type working time (WT4)', () => {
-  it('authors time-in/out + rest, shows derived paid hours, and hydrates on reopen', async () => {
+  it('authors and reopens a bare 8h 30m paid duration', async () => {
     const user = userEvent.setup();
 
-    render(<ItemGroupEditorHarness dataType={DataType.SHIFT_TYPES} initialData={{ items: [], groups: [] }} />);
+    render(<ItemGroupEditorHarness dataType={DataType.SHIFT_TYPES} initialData={{ items: [], groups: [] }} showState />);
 
     await user.click(screen.getByRole('button', { name: /add shift type/i }));
     await user.type(screen.getByPlaceholderText('Enter shift type ID'), 'D');
-    // 08:00 → 16:00 span 480, rest 20 → 460 paid = 7h 40m (off-grid).
-    fireEvent.change(screen.getByLabelText('Start time'), { target: { value: '08:00' } });
-    fireEvent.change(screen.getByLabelText('End time'), { target: { value: '16:00' } });
-    fireEvent.change(screen.getByLabelText('Rest minutes'), { target: { value: '20' } });
+    await user.click(screen.getByRole('button', { name: 'Enter paid duration' }));
+    fireEvent.change(screen.getByLabelText('Paid duration hours'), { target: { value: '8' } });
+    await user.selectOptions(screen.getByLabelText('Paid duration minutes'), '30');
 
-    expect(screen.getByText('Working time: 7h 40m')).toBeInTheDocument();
+    expect(screen.getByText('Paid working time: 8h 30m')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(screen.getByText('1. D')).toBeInTheDocument();
+    expect(JSON.parse(screen.getByTestId('harness-state').textContent ?? '{}').items[0]).toEqual({
+      id: 'D',
+      description: '',
+      durationMinutes: 510,
+    });
 
-    // Reopen the edit form: the durable times hydrate and the derived hours show.
     const row = screen.getByText('1. D').closest('tr') as HTMLTableRowElement;
     await user.click(within(row).getByRole('button', { name: /edit/i }));
 
-    expect(screen.getByLabelText('Start time')).toHaveValue('08:00');
-    expect(screen.getByLabelText('End time')).toHaveValue('16:00');
-    expect(screen.getByLabelText('Rest minutes')).toHaveValue(20);
-    expect(screen.getByText('Working time: 7h 40m')).toBeInTheDocument();
+    expect(screen.getByLabelText('Paid duration hours')).toHaveValue(8);
+    expect(screen.getByLabelText('Paid duration minutes')).toHaveValue('30');
+    expect(screen.getByText('Paid working time: 8h 30m')).toBeInTheDocument();
   }, 15000);
 
-  it('derives an overnight shift across midnight', async () => {
+  it('derives a grid-valid overnight clock shape and omits zero rest', async () => {
     const user = userEvent.setup();
 
-    render(<ItemGroupEditorHarness dataType={DataType.SHIFT_TYPES} initialData={{ items: [], groups: [] }} />);
+    render(<ItemGroupEditorHarness dataType={DataType.SHIFT_TYPES} initialData={{ items: [], groups: [] }} showState />);
 
     await user.click(screen.getByRole('button', { name: /add shift type/i }));
     await user.type(screen.getByPlaceholderText('Enter shift type ID'), 'N');
-    // 22:00 → 06:00 span 480, rest 60 → 420 paid = 7h.
+    await user.click(screen.getByRole('button', { name: 'Enter clock times' }));
     fireEvent.change(screen.getByLabelText('Start time'), { target: { value: '22:00' } });
     fireEvent.change(screen.getByLabelText('End time'), { target: { value: '06:00' } });
-    fireEvent.change(screen.getByLabelText('Rest hours'), { target: { value: '1' } });
 
-    expect(screen.getByText('Working time: 7h')).toBeInTheDocument();
+    expect(screen.getByLabelText('Start time')).toHaveAttribute('step', '1800');
+    expect(screen.getByText('Paid working time: 8h')).toBeInTheDocument();
+    expect(within(screen.getByLabelText('Rest')).queryByRole('option', { name: '0m' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Add' }));
+    expect(JSON.parse(screen.getByTestId('harness-state').textContent ?? '{}').items[0]).toEqual({
+      id: 'N',
+      description: '',
+      durationMinutes: 480,
+      startTime: '22:00',
+      endTime: '06:00',
+    });
   }, 15000);
 
-  it('shows an inline error and blocks save when rest is not less than the span', async () => {
+  it('blocks partial, off-grid, equal-time, and rest-at-least-span clock drafts', async () => {
     const user = userEvent.setup();
 
     render(<ItemGroupEditorHarness dataType={DataType.SHIFT_TYPES} initialData={{ items: [], groups: [] }} />);
 
     await user.click(screen.getByRole('button', { name: /add shift type/i }));
     await user.type(screen.getByPlaceholderText('Enter shift type ID'), 'X');
-    // 08:00 → 12:00 span 240, rest 5h (300) ≥ span → invalid.
-    fireEvent.change(screen.getByLabelText('Start time'), { target: { value: '08:00' } });
-    fireEvent.change(screen.getByLabelText('End time'), { target: { value: '12:00' } });
-    fireEvent.change(screen.getByLabelText('Rest hours'), { target: { value: '5' } });
+    await user.click(screen.getByRole('button', { name: 'Enter clock times' }));
 
-    expect(screen.getByText(/rest must be less than the shift length/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Start time'), { target: { value: '08:00' } });
+    expect(screen.getByRole('alert')).toHaveTextContent(/complete start and end/i);
+
+    fireEvent.change(screen.getByLabelText('End time'), { target: { value: '08:00' } });
+    expect(screen.getByRole('alert')).toHaveTextContent(/must be different/i);
+
+    fireEvent.change(screen.getByLabelText('Start time'), { target: { value: '08:15' } });
+    fireEvent.change(screen.getByLabelText('End time'), { target: { value: '12:00' } });
+    expect(screen.getByRole('alert')).toHaveTextContent(/30-minute grid/i);
+
+    fireEvent.change(screen.getByLabelText('Start time'), { target: { value: '08:00' } });
+    await user.selectOptions(screen.getByLabelText('Rest'), '240');
+    expect(screen.getByRole('alert')).toHaveTextContent(/less than the shift span/i);
 
     await user.click(screen.getByRole('button', { name: 'Add' }));
-
-    // Save blocked: no row created and the form stays open.
     expect(screen.queryByText('1. X')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Start time')).toBeInTheDocument();
   }, 15000);
 
-  it('treats a shift type with no working time as before (no derived hours shown)', async () => {
+  it('requires explicit bare-to-clock confirmation and cancel preserves the bare shape', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <ItemGroupEditorHarness
+        dataType={DataType.SHIFT_TYPES}
+        initialData={{ items: [{ id: 'D', description: 'Day', durationMinutes: 480 }], groups: [] }}
+        showState
+      />,
+    );
+
+    const row = screen.getByText('1. D').closest('tr') as HTMLTableRowElement;
+    await user.click(within(row).getByRole('button', { name: /edit/i }));
+    await user.click(screen.getByRole('button', { name: 'Convert to clock times' }));
+
+    await user.click(screen.getByRole('button', { name: 'Confirm conversion' }));
+    expect(screen.getByRole('alert')).toHaveTextContent(/complete start and end/i);
+
+    fireEvent.change(screen.getByLabelText('Conversion start time'), { target: { value: '08:00' } });
+    fireEvent.change(screen.getByLabelText('Conversion end time'), { target: { value: '17:00' } });
+    await user.selectOptions(screen.getByLabelText('Rest'), '30');
+    await user.click(screen.getByRole('button', { name: 'Cancel conversion' }));
+    expect(screen.getByLabelText('Paid duration hours')).toHaveValue(8);
+
+    await user.click(screen.getByRole('button', { name: 'Update' }));
+    expect(JSON.parse(screen.getByTestId('harness-state').textContent ?? '{}').items[0]).toEqual({
+      id: 'D',
+      description: 'Day',
+      durationMinutes: 480,
+    });
+  }, 15000);
+
+  it('confirms conversions in both directions and clear removes every working-time field', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <ItemGroupEditorHarness
+        dataType={DataType.SHIFT_TYPES}
+        initialData={{ items: [{ id: 'D', description: 'Day', durationMinutes: 480 }], groups: [] }}
+        showState
+      />,
+    );
+
+    let row = screen.getByText('1. D').closest('tr') as HTMLTableRowElement;
+    await user.click(within(row).getByRole('button', { name: /edit/i }));
+    await user.click(screen.getByRole('button', { name: 'Convert to clock times' }));
+    fireEvent.change(screen.getByLabelText('Conversion start time'), { target: { value: '08:00' } });
+    fireEvent.change(screen.getByLabelText('Conversion end time'), { target: { value: '17:00' } });
+    await user.selectOptions(screen.getByLabelText('Rest'), '30');
+    await user.click(screen.getByRole('button', { name: 'Confirm conversion' }));
+    expect(screen.getByText('Paid working time: 8h 30m')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Update' }));
+
+    expect(JSON.parse(screen.getByTestId('harness-state').textContent ?? '{}').items[0]).toEqual({
+      id: 'D',
+      description: 'Day',
+      durationMinutes: 510,
+      startTime: '08:00',
+      endTime: '17:00',
+      restMinutes: 30,
+    });
+
+    row = screen.getByText('1. D').closest('tr') as HTMLTableRowElement;
+    await user.click(within(row).getByRole('button', { name: /edit/i }));
+    await user.click(screen.getByRole('button', { name: 'Convert to duration only' }));
+    expect(screen.getByText(/keep the paid duration of 8h 30m/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Cancel conversion' }));
+    expect(screen.getByLabelText('Start time')).toHaveValue('08:00');
+    expect(screen.getByLabelText('Rest')).toHaveValue('30');
+    await user.click(screen.getByRole('button', { name: 'Convert to duration only' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm conversion' }));
+    await user.click(screen.getByRole('button', { name: 'Clear working time' }));
+    await user.click(screen.getByRole('button', { name: 'Update' }));
+
+    expect(JSON.parse(screen.getByTestId('harness-state').textContent ?? '{}').items[0]).toEqual({
+      id: 'D',
+      description: 'Day',
+    });
+  }, 15000);
+
+  it('hydrates valid imported clock bytes without rounding and overall Cancel is byte-exact', async () => {
+    const user = userEvent.setup();
+    const importedItem = {
+      id: 'N',
+      description: 'Night',
+      durationMinutes: 510,
+      startTime: '20:30',
+      endTime: '06:00',
+      restMinutes: 60,
+    };
+
+    render(
+      <ItemGroupEditorHarness
+        dataType={DataType.SHIFT_TYPES}
+        initialData={{ items: [importedItem], groups: [] }}
+        showState
+      />,
+    );
+
+    const row = screen.getByText('1. N').closest('tr') as HTMLTableRowElement;
+    await user.click(within(row).getByRole('button', { name: /edit/i }));
+    expect(screen.getByLabelText('Start time')).toHaveValue('20:30');
+    expect(screen.getByLabelText('End time')).toHaveValue('06:00');
+    expect(screen.getByLabelText('Rest')).toHaveValue('60');
+    expect(screen.getByText('Paid working time: 8h 30m')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Clear working time' }));
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(JSON.parse(screen.getByTestId('harness-state').textContent ?? '{}').items[0]).toEqual(importedItem);
+  }, 15000);
+
+  it('rehydrates only the next item when switching directly from edit A to edit B', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <ItemGroupEditorHarness
+        dataType={DataType.SHIFT_TYPES}
+        initialData={{
+          items: [
+            { id: 'A', description: 'Day', durationMinutes: 480 },
+            {
+              id: 'B',
+              description: 'Night',
+              durationMinutes: 510,
+              startTime: '20:30',
+              endTime: '06:00',
+              restMinutes: 60,
+            },
+          ],
+          groups: [],
+        }}
+      />,
+    );
+
+    const firstRow = screen.getByText('1. A').closest('tr') as HTMLTableRowElement;
+    await user.click(within(firstRow).getByRole('button', { name: /edit/i }));
+    await user.click(screen.getByRole('button', { name: 'Convert to clock times' }));
+    fireEvent.change(screen.getByLabelText('Conversion start time'), { target: { value: '07:00' } });
+
+    const secondRow = screen.getByText('2. B').closest('tr') as HTMLTableRowElement;
+    await user.click(within(secondRow).getByRole('button', { name: /edit/i }));
+
+    expect(screen.queryByLabelText('Conversion start time')).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue('B')).toBeInTheDocument();
+    expect(screen.getByLabelText('Start time')).toHaveValue('20:30');
+    expect(screen.getByLabelText('End time')).toHaveValue('06:00');
+    expect(screen.getByLabelText('Rest')).toHaveValue('60');
+    expect(screen.getByText('Paid working time: 8h 30m')).toBeInTheDocument();
+  }, 15000);
+
+  it('starts cleared when switching directly from edit to Add Shift Type', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <ItemGroupEditorHarness
+        dataType={DataType.SHIFT_TYPES}
+        initialData={{
+          items: [{ id: 'B', description: 'Night', durationMinutes: 480, startTime: '20:00', endTime: '04:00' }],
+          groups: [],
+        }}
+      />,
+    );
+
+    const row = screen.getByText('1. B').closest('tr') as HTMLTableRowElement;
+    await user.click(within(row).getByRole('button', { name: /edit/i }));
+    await user.click(screen.getByRole('button', { name: 'Convert to duration only' }));
+    expect(screen.getByText(/keep the paid duration/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /add shift type/i }));
+
+    expect(screen.getByPlaceholderText('Enter shift type ID')).toHaveValue('');
+    expect(screen.getByRole('button', { name: 'Enter paid duration' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Enter clock times' })).toBeInTheDocument();
+    expect(screen.queryByText(/keep the paid duration/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Start time')).not.toBeInTheDocument();
+  }, 15000);
+
+  it('blocks a stored duration disagreement instead of silently repairing it', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <ItemGroupEditorHarness
+        dataType={DataType.SHIFT_TYPES}
+        initialData={{
+          items: [{ id: 'D', description: 'Day', durationMinutes: 450, startTime: '08:00', endTime: '16:00' }],
+          groups: [],
+        }}
+      />,
+    );
+
+    const row = screen.getByText('1. D').closest('tr') as HTMLTableRowElement;
+    await user.click(within(row).getByRole('button', { name: /edit/i }));
+    expect(screen.getByRole('alert')).toHaveTextContent(/does not match/i);
+    await user.click(screen.getByRole('button', { name: 'Update' }));
+    expect(screen.getByRole('button', { name: 'Update' })).toBeInTheDocument();
+  });
+
+  it('treats a shift type with no working time as before', async () => {
     const user = userEvent.setup();
 
     render(<ItemGroupEditorHarness dataType={DataType.SHIFT_TYPES} initialData={{ items: [], groups: [] }} />);
@@ -1121,7 +1339,7 @@ describe('ItemGroupEditorPage shift-type working time (WT4)', () => {
     await user.click(screen.getByRole('button', { name: /add shift type/i }));
     await user.type(screen.getByPlaceholderText('Enter shift type ID'), 'A');
 
-    expect(screen.queryByText(/^Working time:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Paid working time:/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Add' }));
 

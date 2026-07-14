@@ -19,6 +19,12 @@
 
 // Utility functions for YAML generation with custom formatting
 import yaml from 'js-yaml';
+import { Preference } from "@/types/scheduling";
+import {
+  assertContractedHoursBoundary,
+  ContractedHoursBoundary,
+  ContractedHoursBoundaryScenario,
+} from "@/utils/contractedHoursBoundary";
 import { CURRENT_APP_VERSION } from '@/utils/version';
 
 // Type definitions for CustomDump class
@@ -28,6 +34,41 @@ export interface CustomDumpOptions {
   lineWidth?: number;
   noRefs?: boolean;
   [key: string]: unknown;
+}
+
+export interface YamlGenerationOptions extends CustomDumpOptions {
+  validateContractedHours?: boolean;
+  contractedHoursBoundary?: ContractedHoursBoundary;
+}
+
+function getContractedHoursScenario(
+  stateObject: unknown,
+): ContractedHoursBoundaryScenario | null {
+  if (typeof stateObject !== "object" || stateObject === null) {
+    return null;
+  }
+
+  const candidate = stateObject as {
+    preferences?: Preference[];
+    shiftTypes?: ContractedHoursBoundaryScenario["shiftTypes"];
+  };
+  if (!Array.isArray(candidate.preferences)) {
+    return null;
+  }
+
+  const hasMarkedContract = candidate.preferences.some(preference =>
+    preference.type === "shift count"
+    && "hoursContract" in preference
+    && preference.hoursContract != null
+  );
+  if (!hasMarkedContract) {
+    return null;
+  }
+
+  return {
+    preferences: candidate.preferences,
+    shiftTypes: candidate.shiftTypes ?? { items: [], groups: [] },
+  };
 }
 
 // Custom function to detect leaf arrays (arrays containing only primitives)
@@ -93,18 +134,31 @@ export function replacer(key: string, value: unknown) {
  * Ref: https://github.com/nodeca/js-yaml/issues/586#issuecomment-814310104
  *
  * @param stateObject - The state object to convert to YAML
- * @param options - Optional CustomDumpOptions for controlling YAML output
+ * @param options - YAML formatting plus the named Contracted Hours boundary
  * @returns YAML string with custom formatting
  */
 export function generateYamlFromState(
   stateObject: unknown,
-  options: CustomDumpOptions = {}
+  options: YamlGenerationOptions = {}
 ): string {
+  const {
+    validateContractedHours = true,
+    contractedHoursBoundary = "scenario-serializer",
+    ...dumpOptions
+  } = options;
+  const contractedHoursScenario = getContractedHoursScenario(stateObject);
+  if (validateContractedHours && contractedHoursScenario) {
+    assertContractedHoursBoundary(
+      contractedHoursScenario,
+      contractedHoursBoundary,
+    );
+  }
+
   const defaultOptions: CustomDumpOptions = {
     indent: 2,
     lineWidth: 120,
     noRefs: true,
-    ...options
+    ...dumpOptions
   };
 
   const exportObject = {

@@ -434,6 +434,7 @@ def _iter_expanded_shift_request_targets(ctx: Context, pref):
 
 def _is_shift_request_satisfied(ctx: Context, pref, *, d: int, p: int, shift_types: list[int]) -> bool:
     """Return whether a cell-level shift request is satisfied by the solved schedule."""
+
     def _state_var(s):
         if s == constants.OFF_sid:
             return ctx.offs[(d, p)]

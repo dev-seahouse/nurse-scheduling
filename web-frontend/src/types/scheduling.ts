@@ -166,6 +166,8 @@ export const SHIFT_AFFINITY = 'shift affinity';
 export const SHIFT_TYPE_COVERING = 'shift type covering';
 
 export const SUPPORTED_EXPRESSIONS = ['|x - T|^2', 'x >= T', 'x <= T', 'x > T', 'x < T', 'x = T'] as const;
+// A single frontend-authorable shift-count expression.
+export type Expression = typeof SUPPORTED_EXPRESSIONS[number];
 export type ShiftCountTypeCoefficient = [string, number];
 
 export interface BasePreference {
@@ -213,13 +215,17 @@ export interface ShiftTypeSuccessionsPreference extends BasePreference {
   weight: number;
 }
 
-// The coefficient unit a shift count's hours contract is expressed in. Presence
-// of `hoursContract` marks a count as a monthly-hours contract; `unit` is the
-// unit its coefficients (and any LEAVE credit) are counted in.
-export type HoursContractUnit = 'half-hour' | 'hour';
+// The fixed unit a shift count's hours contract is expressed in (DL09 D1). There
+// is exactly one valid unit — "half-hour" — with no picker, conversion, or legacy
+// fallback; imported "hour"/"minute" markers are invalid.
+export type HoursContractUnit = 'half-hour';
+// The hard policy a marked contract enforces (DL09 D2): Exact (`x = T`, scalar
+// target) or Allowed range (`[x >= T, x <= T]`, ordered target pair).
+export type HoursContractPolicy = 'exact' | 'range';
 
 export interface HoursContract {
   unit: HoursContractUnit;
+  policy: HoursContractPolicy;
 }
 
 export interface ShiftCountPreference extends BasePreference {
@@ -229,11 +235,16 @@ export interface ShiftCountPreference extends BasePreference {
   countDates: string[];
   countShiftTypes: string[];
   countShiftTypeCoefficients?: ShiftCountTypeCoefficient[];
-  // Authoring-only metadata: accepted-and-ignored by the solver, round-trips
-  // through the YAML sent to schedule(). Absent = not an hours contract.
+  // Authoring-only marker (DL09 D4): its presence marks the count as a fixed
+  // half-hour contracted-hours contract. Accepted-and-ignored by the solver;
+  // round-trips through the YAML sent to schedule(). Absent = generic count.
   hoursContract?: HoursContract;
-  expression: typeof SUPPORTED_EXPRESSIONS[number];
-  target: number;
+  // Lossless wire type (DL09 D8): a scalar authored form OR a backend-valid
+  // array. The guided/scalar editor authors only scalars; unmarked arrays and
+  // the marked Range pair round-trip through import/YAML and are never flattened.
+  // The read-only advanced-rule presentation of arrays is owned by WT6.
+  expression: Expression | Expression[];
+  target: number | number[];
   weight: number;
 }
 

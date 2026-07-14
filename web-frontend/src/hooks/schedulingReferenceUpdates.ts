@@ -17,9 +17,28 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { DataType, ShiftAffinityPreference, ShiftCountPreference, ShiftRequestPreference, ShiftTypeCoveringPreference, ShiftTypeRequirementsPreference, ShiftTypeSuccessionsPreference, SHIFT_AFFINITY, SHIFT_COUNT, SHIFT_REQUEST, SHIFT_TYPE_COVERING, SHIFT_TYPE_REQUIREMENT, SHIFT_TYPE_SUCCESSIONS } from '@/types/scheduling';
+import { DataType, Group, ShiftAffinityPreference, ShiftCountPreference, ShiftRequestPreference, ShiftTypeCoveringPreference, ShiftTypeRequirementsPreference, ShiftTypeSuccessionsPreference, SHIFT_AFFINITY, SHIFT_COUNT, SHIFT_REQUEST, SHIFT_TYPE_COVERING, SHIFT_TYPE_REQUIREMENT, SHIFT_TYPE_SUCCESSIONS } from '@/types/scheduling';
 import { filterReferenceIdTree, mapReferenceIdTree, ReferenceIdTree } from '@/utils/referenceIds';
 import { SchedulingState } from './schedulingState';
+
+// Replace the `groups` array on the slice selected by `dataType`, leaving the
+// rest of the state (and the two other domains' groups) untouched. Group members
+// only ever reference entities within the same domain, so a cascade never has to
+// reach across slices.
+const withDataTypeGroups = (
+  state: SchedulingState,
+  dataType: DataType,
+  groups: Group[]
+): SchedulingState => {
+  switch (dataType) {
+    case DataType.DATES:
+      return { ...state, dates: { ...state.dates, groups } };
+    case DataType.PEOPLE:
+      return { ...state, people: { ...state.people, groups } };
+    case DataType.SHIFT_TYPES:
+      return { ...state, shiftTypes: { ...state.shiftTypes, groups } };
+  }
+};
 
 const renameReferenceIds = (ids: ReferenceIdTree, oldId: string, newId: string): ReferenceIdTree =>
   mapReferenceIdTree(ids, id => id === oldId ? newId : id);
@@ -493,13 +512,60 @@ export const applyExportLayoutForIdChange = (
   };
 };
 
+// Nested ordered-group reference integrity (DL09 D12/D13, FR-RI-17, AC-RI-19).
+// A group member may name an earlier-defined group; that reference is a bare
+// string copy of the group ID (FR-RI-01), so renaming the referenced group must
+// rewrite it wherever it appears as a member of a later group. The edited group's
+// own ID is rewritten by the caller (updateGroup); this pass only reaches the
+// nested references held by *other* groups. Member positions and the group-list
+// definition order are preserved — only the matching member string changes.
+export const applyGroupMembersForIdChange = (
+  state: SchedulingState,
+  dataType: DataType,
+  oldId: string,
+  newId: string
+): SchedulingState => {
+  const groups = state[dataType].groups;
+  let changed = false;
+  const nextGroups = groups.map(group => {
+    if (!group.members.includes(oldId)) return group;
+    changed = true;
+    return { ...group, members: group.members.map(memberId => memberId === oldId ? newId : memberId) };
+  });
+  return changed ? withDataTypeGroups(state, dataType, nextGroups) : state;
+};
+
+// Delete-cascade counterpart: prune every deleted ID from nested group-member
+// references in later groups. Filtering preserves the relative order of the
+// surviving members and never reorders the group list. An emptied group is left
+// in place for the normal explicit empty-group validation to handle (FR-RI-17);
+// the cascade must not flatten or substitute its former concrete expansion.
+export const applyGroupMembersForIdDeletion = (
+  state: SchedulingState,
+  dataType: DataType,
+  deletedIds: string[]
+): SchedulingState => {
+  if (deletedIds.length === 0) return state;
+
+  const deletedIdsSet = new Set(deletedIds);
+  const groups = state[dataType].groups;
+  let changed = false;
+  const nextGroups = groups.map(group => {
+    if (!group.members.some(memberId => deletedIdsSet.has(memberId))) return group;
+    changed = true;
+    return { ...group, members: group.members.filter(memberId => !deletedIdsSet.has(memberId)) };
+  });
+  return changed ? withDataTypeGroups(state, dataType, nextGroups) : state;
+};
+
 export const applyReferencesForIdChange = (
   state: SchedulingState,
   dataType: DataType,
   oldId: string,
   newId: string
 ): SchedulingState => {
-  let nextState = applyPeopleHistoryForIdChange(state, dataType, oldId, newId);
+  let nextState = applyGroupMembersForIdChange(state, dataType, oldId, newId);
+  nextState = applyPeopleHistoryForIdChange(nextState, dataType, oldId, newId);
   nextState = applyPreferencesForIdChange(nextState, dataType, oldId, newId);
   nextState = applyExportLayoutForIdChange(nextState, dataType, oldId, newId);
   return nextState;
@@ -510,7 +576,8 @@ export const applyReferencesForIdDeletion = (
   dataType: DataType,
   deletedIds: string[]
 ): SchedulingState => {
-  let nextState = applyPeopleHistoryForIdDeletion(state, dataType, deletedIds);
+  let nextState = applyGroupMembersForIdDeletion(state, dataType, deletedIds);
+  nextState = applyPeopleHistoryForIdDeletion(nextState, dataType, deletedIds);
   nextState = applyPreferencesForIdDeletion(nextState, dataType, deletedIds);
   nextState = applyExportLayoutForIdDeletion(nextState, dataType, deletedIds);
   return nextState;

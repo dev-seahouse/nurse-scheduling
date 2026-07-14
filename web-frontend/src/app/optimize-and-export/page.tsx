@@ -24,6 +24,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { FiDownload, FiAlertCircle, FiCheckCircle, FiLoader, FiWifi, FiWifiOff, FiActivity, FiRefreshCw } from 'react-icons/fi';
 import OptimizationProgressChart, { OptimizationProgressPoint } from '@/components/OptimizationProgressChart';
+import ContractedHoursValidationNotice from '@/components/ContractedHoursValidationNotice';
 import NumberInput from '@/components/NumberInput';
 import { useSchedulingData } from '@/hooks/useSchedulingData';
 import { anonymizeSchedulingStateWithMapping } from '@/utils/anonymizeSchedulingState';
@@ -35,6 +36,10 @@ import {
   type ServerHealthResponse,
 } from '@/app/optimize-and-export/serverSelection';
 import { CURRENT_APP_VERSION, parseVersionParts } from '@/utils/version';
+import {
+  ContractedHoursDiagnostic,
+  isContractedHoursBoundaryError,
+} from '@/utils/contractedHoursBoundary';
 
 type ServerStatus = 'checking' | 'online' | 'offline';
 
@@ -288,6 +293,7 @@ export default function OptimizeAndExportPage() {
   const [timeoutError, setTimeoutError] = useState<string | null>(null);
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [contractedHoursDiagnostic, setContractedHoursDiagnostic] = useState<ContractedHoursDiagnostic | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [scheduleScore, setScheduleScore] = useState<number | null>(null);
   const [scheduleStatus, setScheduleStatus] = useState<string | null>(null);
@@ -554,6 +560,39 @@ export default function OptimizeAndExportPage() {
       return;
     }
 
+    let anonymizationResult: ReturnType<typeof anonymizeSchedulingStateWithMapping> | null;
+    let yamlContent: string;
+    try {
+      anonymizationResult = anonymizeScheduleData
+        ? anonymizeSchedulingStateWithMapping(filteredState, {
+            anonymizePeopleItems: true,
+            anonymizePeopleGroups: false,
+            removeDescriptions: true,
+          })
+        : null;
+      yamlContent = generateYamlFromState(
+        anonymizationResult?.state ?? filteredState,
+        {
+          contractedHoursBoundary: anonymizeScheduleData
+            ? 'anonymized-optimize'
+            : 'optimize',
+        },
+      );
+      setContractedHoursDiagnostic(null);
+    } catch (error) {
+      if (isContractedHoursBoundaryError(error)) {
+        setContractedHoursDiagnostic(error.diagnostic);
+        setErrorMessage(null);
+        return;
+      }
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Unable to prepare scheduling data for optimization'
+      );
+      return;
+    }
+
     setIsOptimizing(true);
     setTimeoutError(null);
     setErrorMessage(null);
@@ -568,17 +607,9 @@ export default function OptimizeAndExportPage() {
     setSseEvents([]);
 
     try {
-      const anonymizationResult = anonymizeScheduleData
-        ? anonymizeSchedulingStateWithMapping(filteredState, {
-            anonymizePeopleItems: true,
-            anonymizePeopleGroups: false,
-            removeDescriptions: true,
-          })
-        : null;
-
       // Prepare form data
       const formData = new FormData();
-      formData.append('yaml_content', generateYamlFromState(anonymizationResult?.state ?? filteredState));
+      formData.append('yaml_content', yamlContent);
 
       if (prettifyArg !== null && prettifyArg !== undefined) {
         formData.append('prettify', String(prettifyArg));
@@ -785,6 +816,12 @@ export default function OptimizeAndExportPage() {
               </>
             )}
           </div>
+        </div>
+      )}
+
+      {contractedHoursDiagnostic && (
+        <div className="mb-5">
+          <ContractedHoursValidationNotice diagnostic={contractedHoursDiagnostic} />
         </div>
       )}
 

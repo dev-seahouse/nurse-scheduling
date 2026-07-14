@@ -24,6 +24,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, ConfigDict, model_validator, field_validator
 from typing_extensions import Annotated, Self
+from . import group_map
 from .constants import ALL, OFF, LEAVE, MAP_WEEKDAY_TO_STR, MAP_DATE_KEYWORD_TO_FILTER
 
 AT_MOST_ONE_SHIFT_PER_DAY = "at most one shift per day"
@@ -33,6 +34,12 @@ SHIFT_TYPE_SUCCESSIONS = "shift type successions"
 SHIFT_COUNT = "shift count"
 SHIFT_AFFINITY = "shift affinity"
 SHIFT_TYPE_COVERING = "shift type covering"
+
+
+def _clock_minutes(clock: str) -> int:
+    """Minutes since midnight for a grid-valid "HH:MM" clock string."""
+    hours, minutes = clock.split(":")
+    return int(hours) * 60 + int(minutes)
 
 
 def validate_weight(weight: int | float) -> int | float:
@@ -73,14 +80,74 @@ class ShiftType(BaseModel):
     # helper; ignored by the solver.
     durationMinutes: int | None = None
     # Durable, authoring-only working-time fields (WT1). `startTime`/`endTime`
-    # are "HH:MM" clock times and `restMinutes` is the unpaid break; together
-    # they let the frontend derive `durationMinutes` (paid working minutes) and
-    # stay editable on reopen. All optional — absent ⇒ legacy behavior. Ignored
-    # by the solver (mirrors `durationMinutes`); strictly typed so malformed
-    # values cannot slip through the extra="forbid" above.
-    startTime: Annotated[str, Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")] | None = None
-    endTime: Annotated[str, Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")] | None = None
+    # are 30-minute-grid "HH:00"/"HH:30" clock times and `restMinutes` is the
+    # unpaid break; together they let the frontend derive `durationMinutes`
+    # (paid working minutes) and stay editable on reopen. All optional — absent
+    # ⇒ legacy behavior. Ignored by the solver (mirrors `durationMinutes`);
+    # strictly typed so malformed values cannot slip through the extra="forbid"
+    # above. The accepted whole-shape combinations are enforced in
+    # `_validate_working_time` below (DL09 D7 / C1 CON-YAML-26).
+    startTime: Annotated[str, Field(pattern=r"^([01]\d|2[0-3]):(00|30)$")] | None = None
+    endTime: Annotated[str, Field(pattern=r"^([01]\d|2[0-3]):(00|30)$")] | None = None
     restMinutes: int | None = None
+
+    @model_validator(mode="after")
+    def _validate_working_time(self) -> Self:
+        # The 30-minute grid is an input invariant. Accept exactly two shapes:
+        #   (a) bare positive `durationMinutes` divisible by 30; or
+        #   (b) paired `startTime`/`endTime` with optional absent rest (== 0)
+        #       and a required `durationMinutes` equal to the paid minutes.
+        # Everything partial/disagreeing/off-grid/non-positive is rejected.
+
+        # `restMinutes: 0` is accepted at the input boundary but canonicalized
+        # to omission; absence is the only persisted zero-rest form.
+        if self.restMinutes == 0:
+            self.restMinutes = None
+
+        has_start = self.startTime is not None
+        has_end = self.endTime is not None
+        has_rest = self.restMinutes is not None
+        has_duration = self.durationMinutes is not None
+
+        if has_start != has_end:
+            raise ValueError("startTime and endTime must be provided together.")
+
+        if has_start and has_end:
+            # Clock shape.
+            start = _clock_minutes(self.startTime)
+            end = _clock_minutes(self.endTime)
+            if end == start:
+                raise ValueError("startTime and endTime must differ.")
+            if end < start:
+                end += 24 * 60  # An earlier end time means the shift is overnight (+24h).
+            span = end - start
+            rest = self.restMinutes or 0
+            if rest < 0 or rest % 30 != 0:
+                raise ValueError("restMinutes must be a non-negative multiple of 30.")
+            if rest >= span:
+                raise ValueError("restMinutes must be less than the shift span.")
+            paid = span - rest
+            if not has_duration:
+                raise ValueError("durationMinutes is required when startTime and endTime are set.")
+            if self.durationMinutes != paid:
+                raise ValueError(
+                    f"durationMinutes ({self.durationMinutes}) must equal the paid working minutes "
+                    f"({paid} = span {span} - rest {rest})."
+                )
+            # `paid` is a positive multiple of 30 by construction (grid times,
+            # grid rest, rest < span).
+        else:
+            # No clock times: rest alone is a partial shape, and a bare
+            # duration must be positive and grid-aligned.
+            if has_rest:
+                raise ValueError("restMinutes requires startTime and endTime.")
+            if has_duration:
+                if self.durationMinutes <= 0:
+                    raise ValueError("durationMinutes must be positive.")
+                if self.durationMinutes % 30 != 0:
+                    raise ValueError("durationMinutes must be a multiple of 30.")
+            # else: no working-time fields at all — absent ⇒ legacy behavior.
+        return self
 
 
 class ShiftTypeGroup(BaseModel):
@@ -281,13 +348,18 @@ class ShiftTypeRequirementsPreference(BasePreference):
 
 
 class HoursContractMetadata(BaseModel):
-    # Authoring-only metadata: its presence marks a shift count as a monthly
-    # contracted-hours contract (frontend uncredited-leave guard signal), and
-    # `unit` is the coefficient unit the frontend uses to credit LEAVE. Ignored
-    # by the solver (mirrors ShiftType.durationMinutes above). Strictly typed so
-    # malformed metadata cannot slip through the surrounding extra="forbid".
+    # Authoring-only marker: its presence marks a shift count as a fixed
+    # half-hour contracted-hours contract (DL09 D1/D4). `unit` is fixed to
+    # "half-hour" (there is no unit picker, conversion, or legacy fallback) and
+    # `policy` selects the hard Exact / Allowed-Range encoding the raw solve
+    # fields must match (validated at the scenario root, see
+    # NurseSchedulingData.validate_model). Ignored by the solver (mirrors
+    # ShiftType.durationMinutes above). Strictly typed with extra="forbid" so
+    # malformed metadata — including the retired "hour"/"minute" units — cannot
+    # slip through.
     model_config = ConfigDict(extra="forbid")
-    unit: Literal["half-hour", "hour"]
+    unit: Literal["half-hour"]
+    policy: Literal["exact", "range"]
 
 
 class ShiftCountPreference(BasePreference):
@@ -340,10 +412,13 @@ class ShiftTypeCoveringPreference(BasePreference):
     Unlike ShiftAffinity, this is a *hard* implication. The solver cannot
     leave a preceptee working without a preceptor present.
     """
+
     model_config = ConfigDict(extra="forbid")
     type: Annotated[str, Field(pattern=f"^{SHIFT_TYPE_COVERING}$")] = SHIFT_TYPE_COVERING
     description: str | None = None
-    date: (int | str | datetime.date) | list[int | str | datetime.date] | None = None  # Single date or list of dates; None = ALL
+    date: (int | str | datetime.date) | list[int | str | datetime.date] | None = (
+        None  # Single date or list of dates; None = ALL
+    )
     preceptors: list[int | str | list[int | str]]  # At least one of these must cover the preceptee's shift
     preceptees: list[int | str | list[int | str]]  # These trigger the covering requirement
     shiftTypes: list[str | list[str]]  # Shift type IDs this rule applies to
@@ -453,5 +528,10 @@ class NurseSchedulingData(BaseModel):
             ):
                 raise ValueError(f"Date group ID {group.id!r} must not be in the format of YYYY-MM-DD, MM-DD, or D")
             date_group_ids.add(group.id)
+
+        # Validate contracted-hours (marked) shift counts: policy encoding and
+        # exact explicit coefficient coverage over the shared ordered group map.
+        # A no-op unless a shift count carries the `hoursContract` marker.
+        group_map.validate_contracted_hours(self.shiftTypes, self.preferences)
 
         return self

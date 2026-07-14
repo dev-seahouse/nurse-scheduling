@@ -23,6 +23,10 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { act } from 'react';
 import OptimizeAndExportPage from '@/app/optimize-and-export/page';
+import {
+  ContractedHoursBoundaryError,
+  ContractedHoursDiagnostic,
+} from '@/utils/contractedHoursBoundary';
 
 const mockUseSchedulingData = vi.hoisted(() => vi.fn());
 const mockGenerateYamlFromState = vi.hoisted(() => vi.fn());
@@ -117,6 +121,21 @@ const queueInitialLocalSelection = (fetchMock: ReturnType<typeof vi.fn>) => {
   fetchMock.mockResolvedValueOnce(healthyResponse());
   return fetchMock;
 };
+
+const contractedHoursDiagnostic = (
+  boundary: ContractedHoursDiagnostic['boundary'],
+): ContractedHoursDiagnostic => ({
+  boundary,
+  code: 'missing_coefficient',
+  message: "Contracted Hours preference 2 (Monthly contract): A contracted-hours shift count is missing the explicit coefficient for 'E'.",
+  detail: "A contracted-hours shift count is missing the explicit coefficient for 'E'.",
+  path: 'preferences[1].countShiftTypeCoefficients',
+  preferenceIndex: 1,
+  preferenceDescription: 'Monthly contract',
+  repair: 'Open Contracted Hours, repair or refresh the rule, then retry this action.',
+  navigationHref: '/shift-counts',
+  navigationLabel: 'Review Contracted Hours',
+});
 
 describe('OptimizeAndExportPage error handling', () => {
   beforeEach(() => {
@@ -297,6 +316,140 @@ describe('OptimizeAndExportPage error handling', () => {
     expect(screen.getByText(/backend unavailable/i)).toBeInTheDocument();
   });
 
+  it('submits generic arrays and marked Exact/Range preferences through the Optimize path', async () => {
+    const user = userEvent.setup();
+    const preferences = [
+      {
+        type: 'shift count',
+        person: ['P1'],
+        countDates: ['01'],
+        countShiftTypes: ['D'],
+        expression: ['x >= T', 'x <= T'],
+        target: [1, 3],
+        weight: 1,
+      },
+      {
+        type: 'shift count',
+        person: ['P1'],
+        countDates: ['01'],
+        countShiftTypes: ['D'],
+        countShiftTypeCoefficients: [['D', 16]],
+        hoursContract: { unit: 'half-hour', policy: 'exact' },
+        expression: 'x = T',
+        target: 320,
+        weight: Number.POSITIVE_INFINITY,
+      },
+      {
+        type: 'shift count',
+        person: ['P1'],
+        countDates: ['01'],
+        countShiftTypes: ['D'],
+        countShiftTypeCoefficients: [['D', 16]],
+        hoursContract: { unit: 'half-hour', policy: 'range' },
+        expression: ['x >= T', 'x <= T'],
+        target: [300, 340],
+        weight: Number.POSITIVE_INFINITY,
+      },
+    ];
+    mockUseSchedulingData.mockReturnValue(createSchedulingData({ preferences }));
+    mockGenerateYamlFromState.mockReturnValueOnce('preferences: wire-variants\n');
+    const fetchMock = queueInitialLocalSelection(fetch as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        text: vi.fn().mockResolvedValue('submission captured'),
+      });
+
+    render(<OptimizeAndExportPage />);
+    await screen.findByText('Server: Online');
+    await user.click(screen.getByRole('checkbox', { name: /anonymize schedule data/i }));
+    await user.click(screen.getByRole('button', { name: /optimize and download/i }));
+
+    await screen.findByText('Server error (422): submission captured');
+    expect(mockGenerateYamlFromState.mock.lastCall?.[0].preferences).toEqual(preferences);
+
+    const optimizeCall = fetchMock.mock.calls.find(([url]) => url === `${BACKEND_API_URL}/optimize`);
+    const formData = optimizeCall?.[1]?.body as FormData;
+    expect(formData.get('yaml_content')).toBe('preferences: wire-variants\n');
+  });
+
+  it('blocks normal Optimize at its named gate before sending a request', async () => {
+    const user = userEvent.setup();
+    mockGenerateYamlFromState.mockImplementation((_state, options) => {
+      if (options?.contractedHoursBoundary === 'optimize') {
+        throw new ContractedHoursBoundaryError(
+          contractedHoursDiagnostic('optimize'),
+        );
+      }
+      return 'apiVersion: alpha\n';
+    });
+    const fetchMock = queueInitialLocalSelection(fetch as unknown as ReturnType<typeof vi.fn>);
+
+    render(<OptimizeAndExportPage />);
+    await screen.findByText('Server: Online');
+    await user.click(screen.getByRole('checkbox', { name: /anonymize schedule data/i }));
+    await user.click(screen.getByRole('button', { name: /optimize and download/i }));
+
+    expect(screen.getByRole('alert')).toHaveTextContent("missing the explicit coefficient for 'E'");
+    expect(screen.getByRole('link', { name: 'Review Contracted Hours' }))
+      .toHaveAttribute('href', '/shift-counts');
+    expect(fetchMock.mock.calls.filter(([url]) => url === `${BACKEND_API_URL}/optimize`))
+      .toHaveLength(0);
+  });
+
+  it('keeps an existing XLSX after invalid anonymized Optimize and Download Again bypasses validation', async () => {
+    const user = userEvent.setup();
+    let invalid = false;
+    mockGenerateYamlFromState.mockImplementation((_state, options) => {
+      if (options?.contractedHoursBoundary === 'anonymized-optimize' && invalid) {
+        throw new ContractedHoursBoundaryError(
+          contractedHoursDiagnostic('anonymized-optimize'),
+        );
+      }
+      return 'apiVersion: alpha\n';
+    });
+    queueInitialLocalSelection(fetch as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          jobId: 'opt_preserved',
+          status: 'optimal',
+          score: 1,
+          solverStatus: 'OPTIMAL',
+          error: null,
+          xlsxReady: true,
+          links: {
+            status: '/optimize/opt_preserved',
+            events: '/optimize/opt_preserved/events',
+            xlsx: '/optimize/opt_preserved/xlsx',
+          },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        blob: vi.fn().mockResolvedValue(new Blob(['xlsx'])),
+        headers: new Headers({ 'Content-Disposition': 'attachment; filename=preserved.xlsx' }),
+      })
+      .mockResolvedValueOnce({ ok: true });
+    const appendChildSpy = vi.spyOn(document.body, 'appendChild');
+
+    render(<OptimizeAndExportPage />);
+    await screen.findByText('Server: Online');
+    await user.click(screen.getByRole('button', { name: /optimize and download/i }));
+    await screen.findByText('Schedule optimized and downloaded successfully!');
+    expect(screen.getByRole('button', { name: /download again/i })).toBeInTheDocument();
+
+    invalid = true;
+    const appendCount = appendChildSpy.mock.calls.length;
+    await user.click(screen.getByRole('button', { name: /optimize and download/i }));
+
+    expect(screen.getByText('Contracted Hours needs attention')).toBeInTheDocument();
+    const downloadAgain = screen.getByRole('button', { name: /download again/i });
+    expect(downloadAgain).toBeInTheDocument();
+    await user.click(downloadAgain);
+    expect(appendChildSpy).toHaveBeenCalledTimes(appendCount + 1);
+  });
+
   it('creates an optimization job, downloads the XLSX, and deletes the job', async () => {
     const user = userEvent.setup();
     const appendChildSpy = vi.spyOn(document.body, 'appendChild');
@@ -472,7 +625,8 @@ describe('OptimizeAndExportPage error handling', () => {
         people: expect.objectContaining({
           items: [expect.objectContaining({ id: 'Alice' })],
         }),
-      })
+      }),
+      { contractedHoursBoundary: 'optimize' },
     );
     expect(mockRestorePeopleIdsInXlsx).not.toHaveBeenCalled();
   });

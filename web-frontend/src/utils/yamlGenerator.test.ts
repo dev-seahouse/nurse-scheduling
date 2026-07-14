@@ -21,6 +21,7 @@
 
 import yaml from 'js-yaml';
 import { generateYamlFromState, isLeafArray, replacer } from '@/utils/yamlGenerator';
+import { ContractedHoursBoundaryError } from '@/utils/contractedHoursBoundary';
 
 describe('yamlGenerator', () => {
   it('detects leaf arrays only', () => {
@@ -51,16 +52,44 @@ describe('yamlGenerator', () => {
       person: ['P1'],
       countDates: ['ALL'],
       countShiftTypes: ['D'],
-      expression: 'x >= T',
-      target: 1,
-      weight: 1,
-      hoursContract: { unit: 'half-hour' },
+      countShiftTypeCoefficients: [['D', 16]],
+      expression: 'x = T',
+      target: 320,
+      weight: Number.POSITIVE_INFINITY,
+      hoursContract: { unit: 'half-hour', policy: 'exact' },
     };
 
-    const serialized = generateYamlFromState({ preferences: [preference] });
+    const serialized = generateYamlFromState({
+      shiftTypes: { items: [{ id: 'D', description: '' }], groups: [] },
+      preferences: [preference],
+    });
     const parsed = yaml.load(serialized) as { preferences: (typeof preference)[] };
 
-    expect(parsed.preferences[0].hoursContract).toEqual({ unit: 'half-hour' });
+    expect(parsed.preferences[0].hoursContract).toEqual({ unit: 'half-hour', policy: 'exact' });
+  });
+
+  it('round-trips all four shift-count wire variants losslessly (WT3 D8)', () => {
+    const preferences = [
+      // Generic scalar.
+      { type: 'shift count', person: ['P1'], countDates: ['ALL'], countShiftTypes: ['D'], expression: 'x >= T', target: 1, weight: 1 },
+      // Generic backend-valid array (never flattened).
+      { type: 'shift count', person: ['P1'], countDates: ['ALL'], countShiftTypes: ['D'], expression: ['x >= T', 'x <= T'], target: [1, 3], weight: 1 },
+      // Marked Exact: scalar expression + scalar target.
+      { type: 'shift count', person: ['P1'], countDates: ['ALL'], countShiftTypes: ['D'], countShiftTypeCoefficients: [['D', 16]], hoursContract: { unit: 'half-hour', policy: 'exact' }, expression: 'x = T', target: 320, weight: Number.POSITIVE_INFINITY },
+      // Marked Range: expression pair + ordered target pair.
+      { type: 'shift count', person: ['P1'], countDates: ['ALL'], countShiftTypes: ['D'], countShiftTypeCoefficients: [['D', 16]], hoursContract: { unit: 'half-hour', policy: 'range' }, expression: ['x >= T', 'x <= T'], target: [300, 340], weight: Number.POSITIVE_INFINITY },
+    ];
+
+    const serialized = generateYamlFromState({
+      shiftTypes: { items: [{ id: 'D', description: '' }], groups: [] },
+      preferences,
+    });
+    const parsed = yaml.load(serialized) as { preferences: typeof preferences };
+
+    expect(parsed.preferences[0]).toMatchObject({ expression: 'x >= T', target: 1 });
+    expect(parsed.preferences[1]).toMatchObject({ expression: ['x >= T', 'x <= T'], target: [1, 3] });
+    expect(parsed.preferences[2]).toMatchObject({ expression: 'x = T', target: 320, hoursContract: { unit: 'half-hour', policy: 'exact' } });
+    expect(parsed.preferences[3]).toMatchObject({ expression: ['x >= T', 'x <= T'], target: [300, 340], hoursContract: { unit: 'half-hour', policy: 'range' } });
   });
 
   it('round-trips durable shift-type working-time fields through YAML', () => {
@@ -77,5 +106,30 @@ describe('yamlGenerator', () => {
     const parsed = yaml.load(serialized) as { shiftTypes: { items: (typeof shiftType)[] } };
 
     expect(parsed.shiftTypes.items[0]).toEqual(shiftType);
+  });
+
+  it('blocks invalid direct scenario serialization but permits an explicit non-boundary preview', () => {
+    const invalid = {
+      shiftTypes: {
+        items: [{ id: 'D', description: '' }, { id: 'E', description: '' }],
+        groups: [],
+      },
+      preferences: [{
+        type: 'shift count',
+        description: 'Stale ALL coverage',
+        person: ['P1'],
+        countDates: ['ALL'],
+        countShiftTypes: ['ALL'],
+        countShiftTypeCoefficients: [['D', 16]],
+        hoursContract: { unit: 'half-hour', policy: 'exact' },
+        expression: 'x = T',
+        target: 320,
+        weight: Number.POSITIVE_INFINITY,
+      }],
+    };
+
+    expect(() => generateYamlFromState(invalid)).toThrow(ContractedHoursBoundaryError);
+    expect(generateYamlFromState(invalid, { validateContractedHours: false }))
+      .toContain('description: Stale ALL coverage');
   });
 });
