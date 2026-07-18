@@ -20,9 +20,10 @@
 import logging
 import itertools
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from collections.abc import Callable
 from datetime import timedelta
+from typing import Any, NamedTuple
 
 from . import exporter, group_map, preference_types
 from .constants import ALL, MAP_DATE_KEYWORD_TO_FILTER, MAP_WEEKDAY_TO_STR
@@ -31,6 +32,89 @@ from .utils import parse_dates
 from .loader import load_data
 from .model_build_stats import ModelBuildStats, emit_model_build_stats, start_model_build_step
 from .solver_interface import SchedulePhaseProgress, ScheduleProgress, SolverStatus
+
+ORTOOLS_CP_SAT_SOLVER = "ortools/cp-sat"
+ORTOOLS_MPSOLVER_API = "mpsolver"
+ORTOOLS_MPSOLVER_MIP_ENGINES = ("cbc", "scip", "cp-sat", "bop")
+ORTOOLS_MPSOLVER_CANONICAL_SOLVERS = tuple(
+    f"ortools/{ORTOOLS_MPSOLVER_API}/{engine}" for engine in ORTOOLS_MPSOLVER_MIP_ENGINES
+)
+ORTOOLS_MATHOPT_API = "mathopt"
+ORTOOLS_MATHOPT_MIP_ENGINES = ("gscip", "cp-sat", "highs")
+ORTOOLS_MATHOPT_CANONICAL_SOLVERS = tuple(
+    f"ortools/{ORTOOLS_MATHOPT_API}/{engine}" for engine in ORTOOLS_MATHOPT_MIP_ENGINES
+)
+PULP_ENGINES = ("cbc", "cuopt", "glpk", "highs", "scip")
+PULP_SOLVERS = tuple(f"pulp/{engine}" for engine in PULP_ENGINES)
+CANONICAL_SOLVER_CHOICES = (
+    ORTOOLS_CP_SAT_SOLVER,
+    *ORTOOLS_MPSOLVER_CANONICAL_SOLVERS,
+    *ORTOOLS_MATHOPT_CANONICAL_SOLVERS,
+    *PULP_SOLVERS,
+)
+SUPPORTED_SOLVER_CHOICES = CANONICAL_SOLVER_CHOICES
+SOLVER_SELECTOR_HELP = (
+    "Solver selector (ortools/cp-sat, ortools/mpsolver/cbc, ortools/mpsolver/scip, "
+    "ortools/mpsolver/cp-sat, ortools/mpsolver/bop, ortools/mathopt/gscip, "
+    "ortools/mathopt/cp-sat, ortools/mathopt/highs, pulp/cbc, pulp/cuopt, pulp/glpk, pulp/highs, "
+    "or pulp/scip)."
+)
+
+
+@dataclass(frozen=True)
+class SolverSelector:
+    """Normalized solver selector components."""
+
+    backend: str
+    api: str | None
+    engine: str
+    canonical: str
+
+
+def normalize_solver_selector(solver: str) -> SolverSelector:
+    """Normalize a public solver selector."""
+    normalized = solver.strip().lower()
+    parts = normalized.split("/")
+
+    if parts == ["ortools", "cp-sat"]:
+        return SolverSelector(backend="ortools", api="cp-sat", engine="cp-sat", canonical=ORTOOLS_CP_SAT_SOLVER)
+
+    if len(parts) == 3 and parts[:2] == ["ortools", ORTOOLS_MPSOLVER_API]:
+        engine = parts[2]
+        if engine in ORTOOLS_MPSOLVER_MIP_ENGINES:
+            return SolverSelector(
+                backend="ortools",
+                api=ORTOOLS_MPSOLVER_API,
+                engine=engine,
+                canonical=f"ortools/{ORTOOLS_MPSOLVER_API}/{engine}",
+            )
+        raise ValueError(f"Unsupported OR-Tools MPSolver engine: {engine!r}")
+
+    if len(parts) == 3 and parts[:2] == ["ortools", ORTOOLS_MATHOPT_API]:
+        engine = parts[2]
+        if engine in ORTOOLS_MATHOPT_MIP_ENGINES:
+            return SolverSelector(
+                backend="ortools",
+                api=ORTOOLS_MATHOPT_API,
+                engine=engine,
+                canonical=f"ortools/{ORTOOLS_MATHOPT_API}/{engine}",
+            )
+        raise ValueError(f"Unsupported OR-Tools MathOpt engine: {engine!r}")
+
+    if len(parts) == 2 and normalized in PULP_SOLVERS:
+        return SolverSelector(backend="pulp", api=None, engine=parts[1], canonical=normalized)
+
+    raise ValueError(f"Unsupported solver configuration: {solver!r}")
+
+
+class ScheduleResult(NamedTuple):
+    """Typed result returned by the scheduling application service."""
+
+    dataframe: Any | None
+    solution: dict[tuple[int, int, int], int] | None
+    score: int | None
+    solver_status: str
+    cell_export_info: Any | None
 
 
 def _emit_phase_progress(
@@ -57,10 +141,11 @@ def schedule(
     avoid_solution=None,
     prettify=False,
     timeout: int | None = None,
+    solver: str = ORTOOLS_CP_SAT_SOLVER,
     progress_callback: Callable[[ScheduleProgress], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
     model_build_stats_callback: Callable[[ModelBuildStats], None] | None = None,
-):
+) -> ScheduleResult:
     progress_started_at = time.monotonic()
     _emit_phase_progress(
         progress_callback,
@@ -126,10 +211,67 @@ def schedule(
     _emit_phase_progress(progress_callback, "initializing_solver", "Initializing solver model", progress_started_at)
     logging.info("Initializing solver model...")
 
-    from .solver_ortools_cp_sat import ORToolsSolver
+    solver_selector = normalize_solver_selector(solver)
 
-    logging.info("Using solver backend=ortools engine=cp-sat")
-    ctx.solver = ORToolsSolver()
+    # Initialize the solver based on backend provider + engine
+    if solver_selector.canonical == ORTOOLS_CP_SAT_SOLVER:
+        from .solver_ortools_cp_sat import ORToolsSolver
+
+        logging.info(
+            "Using solver backend=%s api=%s engine=%s",
+            solver_selector.backend,
+            solver_selector.api,
+            solver_selector.engine,
+        )
+        ctx.solver = ORToolsSolver()
+    elif solver_selector.backend == "ortools" and solver_selector.api == ORTOOLS_MPSOLVER_API:
+        from .solver_ortools_linear import ORToolsLinearSolver
+
+        logging.info(
+            "Using solver backend=%s api=%s engine=%s canonical=%s",
+            solver_selector.backend,
+            solver_selector.api,
+            solver_selector.engine,
+            solver_selector.canonical,
+        )
+        ctx.solver = ORToolsLinearSolver(engine=solver_selector.engine)
+    elif solver_selector.backend == "ortools" and solver_selector.api == ORTOOLS_MATHOPT_API:
+        from .solver_ortools_mathopt import ORToolsMathOptSolver
+
+        logging.info(
+            "Using solver backend=%s api=%s engine=%s canonical=%s",
+            solver_selector.backend,
+            solver_selector.api,
+            solver_selector.engine,
+            solver_selector.canonical,
+        )
+        ctx.solver = ORToolsMathOptSolver(engine=solver_selector.engine)
+    elif solver_selector.backend == "pulp" and solver_selector.engine == "cbc":
+        from .solver_pulp_cbc import PuLPSolver
+
+        logging.info("Using solver backend=%s engine=%s", solver_selector.backend, solver_selector.engine)
+        ctx.solver = PuLPSolver()
+    elif solver_selector.backend == "pulp" and solver_selector.engine == "cuopt":
+        from .solver_pulp_cuopt import PuLPCuOptSolver
+
+        logging.info("Using solver backend=%s engine=%s", solver_selector.backend, solver_selector.engine)
+        ctx.solver = PuLPCuOptSolver()
+    elif solver_selector.backend == "pulp" and solver_selector.engine == "glpk":
+        from .solver_pulp_glpk import PuLPGLPKSolver
+
+        logging.info("Using solver backend=%s engine=%s", solver_selector.backend, solver_selector.engine)
+        ctx.solver = PuLPGLPKSolver()
+    elif solver_selector.backend == "pulp" and solver_selector.engine in {"highs", "scip"}:
+        from .solver_pulp_python import PuLPHiGHSSolver, PuLPSCIPSolver
+
+        solver_classes = {
+            "highs": PuLPHiGHSSolver,
+            "scip": PuLPSCIPSolver,
+        }
+        logging.info("Using solver backend=%s engine=%s", solver_selector.backend, solver_selector.engine)
+        ctx.solver = solver_classes[solver_selector.engine]()
+    else:
+        raise ValueError(f"Unsupported solver configuration: {solver!r}")
 
     _emit_phase_progress(progress_callback, "creating_shift_variables", "Creating shift variables", progress_started_at)
     logging.info("Creating shift variables...")
@@ -315,14 +457,19 @@ def schedule(
         logging.info("Model invalid!")
         logging.info("Validation Info:")
         logging.info(ctx.solver.validate_model())
+    elif status == SolverStatus.UNKNOWN:
+        logging.info("No solution found before the solver stopped!")
     else:
-        logging.info("No solution found!")
-        raise ValueError(f"No solution found! Status: {ctx.solver_status}")
+        raise ValueError(f"Unexpected solver status: {ctx.solver_status}")
 
     logging.info("Statistics:")
     stats = ctx.solver.get_statistics()
     for key, value in stats.items():
         logging.info(f"  - {key}: {value}")
+
+    if not found:
+        logging.info("Done.")
+        return ScheduleResult(None, None, None, ctx.solver_status, None)
 
     logging.debug("Variables:")
     for k, v in ctx.model_vars.items():
@@ -330,17 +477,15 @@ def schedule(
             logging.debug(f"  - {k}: {ctx.solver.get_value(v)}")
         except Exception as e:
             logging.debug(f"  - {k}: [Error: {e}]")
-    logging.debug("Reports:")
-    for report in ctx.reports:
-        val = ctx.solver.get_value(report.variable)
-        if report.skip_condition(val):
-            continue
-        logging.debug(f"  - {report.description}: {val}")
+    if found:
+        logging.debug("Reports:")
+        for report in ctx.reports:
+            val = ctx.solver.get_value(report.variable)
+            if report.skip_condition(val):
+                continue
+            logging.debug(f"  - {report.description}: {val}")
 
     logging.info("Done.")
-
-    if not found:
-        return None, None, None, ctx.solver_status, None
 
     _emit_phase_progress(progress_callback, "exporting", "Preparing schedule output", progress_started_at)
     df, cell_export_info = exporter.get_people_versus_date_dataframe(ctx, prettify=prettify)
@@ -348,4 +493,4 @@ def schedule(
     for d, s, p in ctx.shifts:
         solution[(d, s, p)] = ctx.solver.get_value(ctx.shifts[(d, s, p)])
     # TODO: Better way to return?
-    return df, solution, ctx.solver.get_objective_value(), ctx.solver_status, cell_export_info
+    return ScheduleResult(df, solution, ctx.solver.get_objective_value(), ctx.solver_status, cell_export_info)

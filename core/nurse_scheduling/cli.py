@@ -111,6 +111,13 @@ def main():
         help="Maximum running time in seconds. If reached, the solver will stop and the current best result (if any) will be exported.",
     )
     parser.add_argument(
+        "--solver",
+        type=str,
+        default="ortools/cp-sat",
+        choices=scheduler.SUPPORTED_SOLVER_CHOICES,
+        help=scheduler.SOLVER_SELECTOR_HELP,
+    )
+    parser.add_argument(
         "--show-model-build-stats",
         action="store_true",
         help="Print model-build timing and variable/constraint deltas for each build step.",
@@ -129,6 +136,7 @@ def main():
     output_path = args.output_path
     prettify = args.prettify
     verbose = args.verbose
+    solver = args.solver
 
     if args.progress_output and not prettify:
         print("Error: --progress-output requires --prettify")
@@ -179,13 +187,19 @@ def main():
                 progress_output_file,
                 print_to_stdout=not args.show_model_build_stats,
             )
-        df, solution, score, status, cell_export_info = scheduler.schedule(
+        schedule_result = scheduler.schedule(
             file_content,
             prettify=prettify,
             timeout=args.timeout,
+            solver=solver,
             progress_callback=progress_callback,
             model_build_stats_callback=model_build_stats_callback,
         )
+        df = schedule_result.dataframe
+        solution = schedule_result.solution
+        score = schedule_result.score
+        status = schedule_result.solver_status
+        cell_export_info = schedule_result.cell_export_info
         if progress_output_file is not None and df is not None:
             progress_callback(
                 SolverProgress(

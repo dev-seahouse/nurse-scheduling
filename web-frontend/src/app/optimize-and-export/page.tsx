@@ -44,20 +44,27 @@ import {
 type ServerStatus = 'checking' | 'online' | 'offline';
 
 interface OptimizeJobResponse {
-  jobId: string;
-  status: string;
-  queuePosition?: number | null;
-  score: number | null;
-  solverStatus: string | null;
-  error: string | null;
-  cancelRequested?: boolean;
-  finishNowRequested?: boolean;
-  xlsxReady: boolean;
+  id: string;
+  state: 'queued' | 'running' | 'cancelling' | 'completed' | 'cancelled' | 'failed';
+  terminal: boolean;
+  queue_position: number | null;
+  result: {
+    outcome: 'optimal' | 'feasible' | 'infeasible';
+    score: number | null;
+    solver_status: string;
+    termination_reason: string | null;
+  } | null;
+  error: { code: string; message: string } | null;
+  controls: {
+    cancellable: boolean;
+    early_completion_available: boolean;
+  };
   links: {
-    status: string;
+    self: string;
     events: string;
-    heartbeat?: string;
-    xlsx: string;
+    cancellation: string;
+    early_completion: string;
+    schedule: string | null;
   };
 }
 
@@ -79,8 +86,7 @@ interface OptimizePhaseEvent {
   message?: string;
 }
 
-const TERMINAL_JOB_STATUSES = new Set(['optimal', 'feasible', 'infeasible', 'cancelled', 'failed']);
-const OPTIMIZE_CLIENT_HEARTBEAT_INTERVAL_MS = 10_000;
+const TERMINAL_JOB_STATES = new Set(['completed', 'cancelled', 'failed']);
 const HEALTH_CHECK_TIMEOUT_MS = 3000;
 
 function isDirtyAppVersion(version: string): boolean {
@@ -155,6 +161,9 @@ async function getErrorDetail(response: Response): Promise<string> {
   const errorText = await response.text();
   try {
     const errorJson = JSON.parse(errorText);
+    if (typeof errorJson.error?.message === 'string') {
+      return errorJson.error.message;
+    }
     if (typeof errorJson.detail === 'string') {
       return errorJson.detail;
     }
@@ -248,16 +257,16 @@ function formatProgressSummary(data: OptimizeProgressEvent): string {
 }
 
 function getEventBadgeClasses(type: string): string {
-  if (type === 'complete') {
+  if (type === 'job.result_available') {
     return 'bg-green-50 text-green-700 ring-green-200';
   }
   if (type === 'error') {
     return 'bg-red-50 text-red-700 ring-red-200';
   }
-  if (type === 'progress') {
+  if (type === 'job.progressed') {
     return 'bg-blue-50 text-blue-700 ring-blue-200';
   }
-  if (type === 'phase') {
+  if (type === 'job.phase_changed') {
     return 'bg-amber-50 text-amber-700 ring-amber-200';
   }
   return 'bg-gray-100 text-gray-700 ring-gray-200';
@@ -315,8 +324,8 @@ export default function OptimizeAndExportPage() {
   const isJobActive = Boolean(
     currentJobId &&
     isOptimizing &&
-    scheduleStatus &&
-    !TERMINAL_JOB_STATUSES.has(scheduleStatus.toLowerCase())
+    currentJob &&
+    !currentJob.terminal
   );
   const isCancelling = scheduleStatus === 'cancelling';
   const isOptimizeDisabled = isOptimizing || isRequiredDataMissing || serverStatus !== 'online';
@@ -407,29 +416,8 @@ export default function OptimizeAndExportPage() {
     };
   }, [runHealthCheck]);
 
-  useEffect(() => {
-    if (!currentJobId || !isJobActive) {
-      return;
-    }
-
-    const sendHeartbeat = () => {
-      const heartbeatPath = currentJob?.links.heartbeat ?? `/optimize/${currentJobId}/heartbeat`;
-      void fetch(buildApiUrl(BACKEND_API_URL, heartbeatPath), {
-        method: 'POST',
-        cache: 'no-store',
-      }).catch(() => {
-        // The backend watchdog decides whether missed heartbeats should cancel the job.
-      });
-    };
-    const intervalId = window.setInterval(sendHeartbeat, OPTIMIZE_CLIENT_HEARTBEAT_INTERVAL_MS);
-
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [currentJob?.links.heartbeat, currentJobId, isJobActive]);
-
   const getOptimizeJobStatus = useCallback(async (job: OptimizeJobResponse): Promise<OptimizeJobResponse> => {
-    const response = await fetch(buildApiUrl(BACKEND_API_URL, job.links.status), {
+    const response = await fetch(buildApiUrl(BACKEND_API_URL, job.links.self), {
       method: 'GET',
       cache: 'no-store',
     });
@@ -447,9 +435,9 @@ export default function OptimizeAndExportPage() {
         try {
           const updatedJob = await getOptimizeJobStatus(job);
           setCurrentJob(updatedJob);
-          setScheduleStatus(updatedJob.status);
+          setScheduleStatus(updatedJob.state);
 
-          if (TERMINAL_JOB_STATUSES.has(updatedJob.status)) {
+          if (updatedJob.terminal) {
             resolve(updatedJob);
             return;
           }
@@ -465,27 +453,43 @@ export default function OptimizeAndExportPage() {
   }, [getOptimizeJobStatus]);
 
   const waitForOptimizeJob = useCallback((job: OptimizeJobResponse): Promise<OptimizeJobResponse> => {
-    if (TERMINAL_JOB_STATUSES.has(job.status)) {
+    if (job.terminal) {
       return Promise.resolve(job);
     }
 
     if (typeof EventSource !== 'undefined') {
       return new Promise((resolve, reject) => {
         const eventSource = new EventSource(buildApiUrl(BACKEND_API_URL, job.links.events));
+        let finalizationStarted = false;
 
-        eventSource.addEventListener('status', (event) => {
+        const finalizeJob = () => {
+          if (finalizationStarted) {
+            return;
+          }
+          finalizationStarted = true;
+          eventSource.close();
+          void getOptimizeJobStatus(job).then(completedJob => {
+            setCurrentJob(completedJob);
+            resolve(completedJob);
+          }).catch(reject);
+        };
+
+        eventSource.addEventListener('job.state_changed', (event) => {
           const parsedData = parseSseEventData(event);
-          appendSseEvent('status', parsedData);
+          appendSseEvent('job.state_changed', parsedData);
           const updatedJob = parsedData as Partial<OptimizeJobResponse>;
-          if (updatedJob.status) {
-            setScheduleStatus(updatedJob.status);
+          if (updatedJob.state) {
+            setScheduleStatus(updatedJob.state);
           }
           setCurrentJob(currentJob => currentJob ? { ...currentJob, ...updatedJob } : currentJob);
+          if (updatedJob.state && TERMINAL_JOB_STATES.has(updatedJob.state)) {
+            finalizeJob();
+          }
         });
 
-        eventSource.addEventListener('progress', (event) => {
+        eventSource.addEventListener('job.progressed', (event) => {
           const parsedData = parseSseEventData(event);
-          appendSseEvent('progress', parsedData);
+          appendSseEvent('job.progressed', parsedData);
           if (isProgressEventData(parsedData)) {
             setIncumbentResult(parsedData);
             if (typeof parsedData.currentBestScore === 'number') {
@@ -503,18 +507,15 @@ export default function OptimizeAndExportPage() {
           }
         });
 
-        eventSource.addEventListener('phase', (event) => {
+        eventSource.addEventListener('job.phase_changed', (event) => {
           const parsedData = parseSseEventData(event);
-          appendSseEvent('phase', parsedData);
+          appendSseEvent('job.phase_changed', parsedData);
         });
 
-        eventSource.addEventListener('complete', (event) => {
-          eventSource.close();
+        eventSource.addEventListener('job.result_available', (event) => {
           const parsedData = parseSseEventData(event);
-          appendSseEvent('complete', parsedData);
-          const completedJob = parsedData as OptimizeJobResponse;
-          setCurrentJob(completedJob);
-          resolve(completedJob);
+          appendSseEvent('job.result_available', parsedData);
+          finalizeJob();
         });
 
         eventSource.addEventListener('error', (event) => {
@@ -522,7 +523,7 @@ export default function OptimizeAndExportPage() {
             eventSource.close();
             const parsedData = parseSseEventData(event as MessageEvent);
             appendSseEvent('error', parsedData);
-            reject(new Error((parsedData as OptimizeJobResponse).error ?? 'Optimization failed'));
+            reject(new Error('Optimization event stream failed'));
           } else {
             appendSseEvent('error', 'Optimization event stream disconnected; waiting to reconnect');
           }
@@ -531,7 +532,7 @@ export default function OptimizeAndExportPage() {
     }
 
     return pollOptimizeJob(job);
-  }, [appendSseEvent, pollOptimizeJob]);
+  }, [appendSseEvent, getOptimizeJobStatus, pollOptimizeJob]);
 
   const handleOptimizeAndDownload = async () => {
     if (isRequiredDataMissing) {
@@ -627,29 +628,29 @@ export default function OptimizeAndExportPage() {
       }
 
       const createdJob = await createResponse.json() as OptimizeJobResponse;
-      setCurrentJobId(createdJob.jobId);
+      setCurrentJobId(createdJob.id);
       setCurrentJob(createdJob);
-      setScheduleStatus(createdJob.status);
+      setScheduleStatus(createdJob.state);
 
       const completedJob = await waitForOptimizeJob(createdJob);
       setCurrentJob(completedJob);
-      setScheduleStatus(completedJob.status);
+      setScheduleStatus(completedJob.state);
 
-      if (completedJob.score !== null) {
-        setScheduleScore(completedJob.score);
+      if (completedJob.result?.score !== null && completedJob.result?.score !== undefined) {
+        setScheduleScore(completedJob.result.score);
       }
-      if (completedJob.solverStatus) {
-        setScheduleStatus(completedJob.solverStatus);
+      if (completedJob.result?.solver_status) {
+        setScheduleStatus(completedJob.result.solver_status);
       }
 
       if (completedJob.error) {
-        throw new Error(completedJob.error);
+        throw new Error(completedJob.error.message);
       }
-      if (!completedJob.xlsxReady) {
-        throw new Error(`No downloadable schedule is available. Job status: ${completedJob.status}`);
+      if (!completedJob.links.schedule) {
+        throw new Error(`No downloadable schedule is available. Job outcome: ${completedJob.result?.outcome ?? completedJob.state}`);
       }
 
-      const xlsxResponse = await fetch(buildApiUrl(BACKEND_API_URL, completedJob.links.xlsx), {
+      const xlsxResponse = await fetch(buildApiUrl(BACKEND_API_URL, completedJob.links.schedule), {
         method: 'GET',
       });
 
@@ -673,9 +674,9 @@ export default function OptimizeAndExportPage() {
       setSavedDownload({ url, filename });
       downloadFileFromUrl(url, filename);
 
-      void fetch(buildApiUrl(BACKEND_API_URL, `/optimize/${completedJob.jobId}`), {
+      void fetch(buildApiUrl(BACKEND_API_URL, completedJob.links.self), {
         method: 'DELETE',
-      });
+      }).catch(() => undefined);
 
       setSuccessMessage('Schedule optimized and downloaded successfully!');
     } catch (error) {
@@ -696,7 +697,10 @@ export default function OptimizeAndExportPage() {
     }
 
     try {
-      const response = await fetch(buildApiUrl(BACKEND_API_URL, `/optimize/${currentJobId}/${action}`), {
+      const actionPath = action === 'cancel'
+        ? currentJob?.links.cancellation ?? `/optimize/${currentJobId}/cancel`
+        : currentJob?.links.early_completion ?? `/optimize/${currentJobId}/finish-now`;
+      const response = await fetch(buildApiUrl(BACKEND_API_URL, actionPath), {
         method: 'POST',
       });
 
@@ -706,7 +710,7 @@ export default function OptimizeAndExportPage() {
 
       const updatedJob = await response.json() as OptimizeJobResponse;
       setCurrentJob(updatedJob);
-      setScheduleStatus(updatedJob.status);
+      setScheduleStatus(updatedJob.state);
     } catch (error) {
       setErrorMessage(
         error instanceof Error
@@ -731,7 +735,7 @@ export default function OptimizeAndExportPage() {
   const serverStatusLabel = formatServerStatus(serverStatus);
 
   const runStatus = scheduleStatus
-    ? formatRunStatus(scheduleStatus, currentJob?.queuePosition)
+    ? formatRunStatus(scheduleStatus, currentJob?.queue_position)
     : isOptimizing
       ? 'Starting'
       : 'Idle';
@@ -838,7 +842,7 @@ export default function OptimizeAndExportPage() {
                   {serverHealth && (
                     <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
                       <p>
-                        API version: {serverHealth.apiVersion ?? serverHealth.version} · Frontend version: {CURRENT_APP_VERSION} · Backend version: {serverHealth.appVersion}
+                        API version: {serverHealth.apiVersion} · Frontend version: {CURRENT_APP_VERSION} · Backend version: {serverHealth.appVersion}
                       </p>
                       {hasVersionMismatch && (
                         <p className="mt-1 font-medium text-amber-700">
@@ -992,8 +996,8 @@ export default function OptimizeAndExportPage() {
                 <p>No optimization has been started.</p>
               ) : isOptimizing && scheduleStatus === 'queued' ? (
                 <p>
-                  {currentJob?.queuePosition
-                    ? `Waiting in optimization queue at position ${currentJob.queuePosition}.`
+                  {currentJob?.queue_position
+                    ? `Waiting in optimization queue at position ${currentJob.queue_position}.`
                     : 'Waiting in optimization queue.'}
                 </p>
               ) : isOptimizing && !incumbentResult ? (
@@ -1036,7 +1040,7 @@ export default function OptimizeAndExportPage() {
                     <button
                       type="button"
                       onClick={() => void requestJobControl('finish-now')}
-                      disabled={Boolean(currentJob?.finishNowRequested) || isCancelling}
+                      disabled={!currentJob?.controls.early_completion_available || isCancelling}
                       title="Finish with the current incumbent result"
                       className="inline-flex flex-1 items-center justify-center gap-2 rounded-md border border-blue-300 bg-white px-3 py-2 text-sm font-medium text-blue-700 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:border-gray-200 disabled:text-gray-400"
                     >
@@ -1046,7 +1050,7 @@ export default function OptimizeAndExportPage() {
                     <button
                       type="button"
                       onClick={() => void requestJobControl('cancel')}
-                      disabled={isCancelling}
+                      disabled={!currentJob?.controls.cancellable || isCancelling}
                       title="Stop the active optimization job"
                       className="inline-flex items-center justify-center gap-2 rounded-md border border-red-300 bg-white px-3 py-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:border-gray-200 disabled:text-gray-400"
                     >
@@ -1103,10 +1107,10 @@ export default function OptimizeAndExportPage() {
                     {isProgressEventData(event.data) && (
                       <p className="font-semibold text-gray-900">{formatProgressSummary(event.data)}</p>
                     )}
-                    {event.type === 'phase' && isPhaseEventData(event.data) && event.data.message && (
+                    {event.type === 'job.phase_changed' && isPhaseEventData(event.data) && event.data.message && (
                       <p className="font-semibold text-gray-900">{event.data.message}</p>
                     )}
-                    <details className={isProgressEventData(event.data) || event.type === 'phase' ? 'mt-2' : ''}>
+                    <details className={isProgressEventData(event.data) || event.type === 'job.phase_changed' ? 'mt-2' : ''}>
                       <summary className="cursor-pointer text-gray-500">Raw event data</summary>
                       <pre className="mt-2 whitespace-pre-wrap break-words">{formatSseEventData(event.data)}</pre>
                     </details>

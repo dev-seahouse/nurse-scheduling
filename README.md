@@ -122,6 +122,8 @@ For Linux only: to quickly set up all local environments (`core`, `web-frontend`
 
 For Docker-based development environment:
 
+CPU solver:
+
 ```sh
 # build image
 docker build -f docker/Dockerfile -t j3soon/nurse-scheduling:dev .
@@ -148,6 +150,52 @@ docker run --rm -it --network=host \
   -v /etc/timezone:/etc/timezone:ro \
   j3soon/nurse-scheduling:dev
 ```
+
+GPU solver:
+
+```sh
+# or build image with cuOpt support
+docker build -f docker/Dockerfile.cuopt -t j3soon/nurse-scheduling:dev-cuopt .
+```
+
+The cuOpt image omits `highspy` because the pinned release has no CPython 3.14
+wheel. Use another environment for the `pulp/highs` solver.
+
+```sh
+# persist Codex/Claude Code/OpenCode auth/config across containers
+mkdir -p ~/docker/.codex
+mkdir -p ~/docker/.claude
+touch ~/docker/.claude.json
+mkdir -p ~/docker/opencode/.config/opencode
+mkdir -p ~/docker/opencode/.local/share/opencode
+# mount project files and Codex/Claude Code/OpenCode config
+docker run --rm -it --gpus all --network=host \
+  -v $(pwd):/app \
+  -v ~/docker/.codex:/root/.codex \
+  -v ~/docker/.claude:/root/.claude \
+  -v ~/docker/.claude.json:/root/.claude.json \
+  -v ~/docker/opencode/.config/opencode:/root/.config/opencode \
+  -v ~/docker/opencode/.local/share/opencode:/root/.local/share/opencode \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /etc/timezone:/etc/timezone:ro \
+  j3soon/nurse-scheduling:dev-cuopt
+```
+
+Inside either development container, start Redis and run the backend in Redis mode:
+
+```sh
+redis-server --daemonize yes
+redis-cli ping
+cd /app/core
+JOB_BACKEND=redis \
+JOB_REDIS_URL=redis://localhost:6379/0 \
+JOB_REDIS_KEY_PREFIX=nurse_scheduling:jobs:v0 \
+uvicorn nurse_scheduling.serve:app --workers 3 --host 0.0.0.0 --port 8000 --no-access-log
+```
+
+Workers renew a 90-second execution lease while optimizing. Set
+`JOB_CLAIM_LEASE_SECONDS` to change how long the server waits before marking a
+job failed after its worker disappears.
 
 or with X11 forwarding for running Playwright interactive mode in the container:
 
@@ -248,9 +296,25 @@ bun run lint -- --fix
 
 ### Core
 
-We use Google OR-Tools' CP-SAT solver as the only backend.
+We currently support thirteen solver selectors across OR-Tools and PuLP.
 
-- `ortools/cp-sat` is the default solver and the only one we ship. It can prove optimality (or infeasibility) within the configured runtime budget at the scales we target.
+> All backends other than OR-Tools/CP-SAT are experimental.
+
+- `ortools/cp-sat` is the default solver and the most battle-tested one.
+- `ortools/mpsolver/cbc` uses CBC through the OR-Tools linear MIP API and is covered by the normal schedule regression suite.
+- `ortools/mpsolver/scip` and `ortools/mpsolver/cp-sat` use SCIP and CP-SAT through the OR-Tools linear MIP API and are covered by the normal schedule regression suite.
+- `ortools/mpsolver/bop` uses the legacy BOP engine. It has low-level and bounded schedule smoke coverage, but is not recommended for larger schedules because it can be substantially slower.
+- `ortools/mathopt/gscip`, `ortools/mathopt/cp-sat`, and `ortools/mathopt/highs` use the bundled integer-capable engines through the newer [OR-Tools MathOpt API](https://developers.google.com/optimization/math_opt) and are covered by the normal schedule regression suite.
+- `pulp/cbc` is covered by the normal schedule regression suite and opt-in real-world smoke checks.
+- `pulp/cuopt` is the GPU-accelerated solver. Its real-world smoke check is opt-in and skips when the backend is unavailable.
+- `pulp/glpk` uses the GLPK command-line solver and has low-level and bounded schedule smoke coverage. Install `glpsol` with `apt install glpk-utils`, `brew install glpk`, or `choco install glpk` before selecting it. GLPK can be substantially slower than the other supported backends on larger scheduling models.
+- `pulp/highs` uses the HiGHS Python API and is covered by the normal schedule regression suite. The `highspy` version is pinned to the HiGHS ABI bundled with OR-Tools.
+- `pulp/scip` uses the SCIP Python API and is covered by the normal schedule regression suite.
+
+Running optimization jobs can be cancelled or finished early with `ortools/cp-sat`,
+`ortools/mpsolver/scip`, `ortools/mpsolver/cp-sat`, `ortools/mpsolver/bop`, and
+`ortools/mathopt/cp-sat`. MathOpt/GSCIP, MathOpt/HiGHS, CBC, and PuLP backends do
+not support cooperative interruption in this application.
 
 ```sh
 cd core
@@ -268,6 +332,26 @@ python -m nurse_scheduling.cli tests/testcases/basics/01_1nurse_1shift_1day.yaml
 python -m nurse_scheduling.cli <input_file_path> [output_xlsx_path] --verbose --prettify
 # record solver progress as JSON Lines for later plotting
 python -m nurse_scheduling.cli tests/testcases/real/large-ward-with-87-people-2025-11.yaml --verbose --prettify --timeout 180 --progress-output progress.jsonl
+# run CLI with PuLP/CBC solver (experimental)
+python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver pulp/cbc
+# run CLI with PuLP/cuOpt solver (experimental) and GPU required
+python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver pulp/cuopt
+# run PuLP/GLPK (experimental; requires glpsol on PATH)
+python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver pulp/glpk
+# run non-commercial PuLP Python-API solvers (experimental)
+python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver pulp/highs
+python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver pulp/scip
+# explicit OR-Tools/CP-SAT selector
+python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/cp-sat
+# run an OR-Tools MPSolver backend (experimental)
+python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/mpsolver/cbc
+python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/mpsolver/scip
+python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/mpsolver/cp-sat
+python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/mpsolver/bop
+# run an OR-Tools MathOpt backend (experimental)
+python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/mathopt/gscip
+python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/mathopt/cp-sat
+python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/mathopt/highs
 ```
 
 Run tests:
@@ -276,8 +360,28 @@ Run tests:
 cd core
 # run low-level solver encoding tests
 pytest --log-cli-level=INFO tests/test_solver_ortools_cp_sat.py
-# run schedule regression tests
+pytest --log-cli-level=INFO tests/test_solver_ortools_linear.py
+pytest --log-cli-level=INFO tests/test_solver_ortools_mathopt.py
+pytest --log-cli-level=INFO tests/test_solver_pulp_cbc.py
+pytest --log-cli-level=INFO tests/test_solver_pulp_cuopt.py
+pytest --log-cli-level=INFO tests/test_solver_pulp_glpk.py
+pytest --log-cli-level=INFO tests/test_solver_pulp_python.py
+# run schedule regression tests (OR-Tools / PuLP)
 pytest --log-cli-level=INFO tests/test_schedule_ortools_cp_sat.py
+pytest --log-cli-level=INFO \
+  tests/test_schedule_ortools_mpsolver_cbc.py \
+  tests/test_schedule_ortools_mpsolver_scip.py \
+  tests/test_schedule_ortools_mpsolver_cp_sat.py \
+  tests/test_schedule_ortools_mpsolver_bop.py
+pytest --log-cli-level=INFO \
+  tests/test_schedule_ortools_mathopt_gscip.py \
+  tests/test_schedule_ortools_mathopt_cp_sat.py \
+  tests/test_schedule_ortools_mathopt_highs.py
+pytest --log-cli-level=INFO tests/test_schedule_pulp_cbc.py
+pytest --log-cli-level=INFO tests/test_schedule_pulp_cuopt.py
+pytest --log-cli-level=INFO tests/test_schedule_pulp_glpk.py
+pytest --log-cli-level=INFO tests/test_schedule_pulp_highs.py
+pytest --log-cli-level=INFO tests/test_schedule_pulp_scip.py
 # run the normal core test suite
 pytest --log-cli-level=INFO
 # run the slower bounded real-world scenario checks explicitly
@@ -307,7 +411,9 @@ For more debugging output when a test fails:
 ```sh
 cd core
 pytest --log-cli-level=DEBUG tests/test_solver_ortools_cp_sat.py
+pytest --log-cli-level=DEBUG tests/test_solver_pulp_cbc.py
 pytest --log-cli-level=DEBUG tests/test_schedule_ortools_cp_sat.py
+pytest --log-cli-level=DEBUG tests/test_schedule_pulp_cbc.py
 ```
 
 Note that setting `WRITE_TO_CSV=True` in `core/tests/schedule_test_helper.py` is often useful for creating new test cases.
@@ -336,12 +442,129 @@ python tests/test_serve.py
 pytest tests/test_serve.py --log-cli-level=INFO
 ```
 
-(TODO: Production mode instructions are not yet completed.)
+By default, optimization job state is process-local memory:
 
-<!--
-# or in production mode
-fastapi run serve.py --port 8000 --workers 4
--->
+```sh
+cd core
+JOB_BACKEND=memory uvicorn nurse_scheduling.serve:app --no-access-log
+```
+
+For multiple Uvicorn workers or multiple backend machines, use Redis-backed job state. Redis stores job metadata,
+queued job IDs, YAML inputs, XLSX artifacts, and replayable optimization events. Each backend process still runs at
+most one optimization job locally, so `--workers 3` allows up to three simultaneous jobs across those worker processes.
+
+```sh
+cd core
+JOB_BACKEND=redis \
+JOB_REDIS_URL=redis://localhost:6379/0 \
+JOB_REDIS_KEY_PREFIX=nurse_scheduling:jobs:v0 \
+uvicorn nurse_scheduling.serve:app --workers 3 --no-access-log
+```
+
+The optional `JOB_CLAIM_LEASE_SECONDS` setting defaults to 90 seconds. Keep it
+long enough to tolerate brief Redis interruptions; each active worker renews
+its lease every third of that interval.
+
+Replayable event history is capped at 1,000 events per job; set
+`JOB_MAX_EVENTS_PER_JOB` to choose a different positive limit.
+
+Without Docker, install and start Redis with your operating system package manager.
+
+Ubuntu/Debian:
+
+```sh
+sudo apt-get update
+sudo apt-get install redis-server
+redis-server --daemonize yes
+redis-cli ping
+```
+
+macOS with Homebrew:
+
+```sh
+brew install redis
+brew services start redis
+redis-cli ping
+```
+
+Run the Redis backend tests against a local Redis database:
+
+```sh
+cd core
+JOB_REDIS_TEST_URL=redis://localhost:6379/15 pytest --log-cli-level=INFO tests/test_optimize_job_backends.py
+```
+
+For Docker Compose deployment, `docker/compose.backend.yml` starts a Redis
+service and configures the backend to use it:
+
+```sh
+cd docker
+docker compose -f compose.backend.yml up -d --build
+```
+
+#### Inspect Redis Data
+
+The Compose deployment uses Redis database `0` and the key prefix
+`nurse_scheduling:jobs:v0`. Open `redis-cli` from the Redis container:
+
+```sh
+docker compose -f compose.backend.yml exec redis redis-cli -n 0
+```
+
+Useful inspection commands include:
+
+```text
+DBSIZE
+SCAN 0 MATCH nurse_scheduling:jobs:v0:* COUNT 100
+ZRANGE nurse_scheduling:jobs:v0:jobs 0 -1 WITHSCORES
+ZRANGE nurse_scheduling:jobs:v0:queue 0 -1 WITHSCORES
+SMEMBERS nurse_scheduling:jobs:v0:pending
+GET nurse_scheduling:jobs:v0:job:<job-id>
+GET nurse_scheduling:jobs:v0:job:<job-id>:input
+XRANGE nurse_scheduling:jobs:v0:job:<job-id>:events - + COUNT 20
+HGETALL nurse_scheduling:jobs:v0:job:<job-id>:artifact_metadata
+```
+
+Use `SCAN` instead of `KEYS *` on a busy database. Job artifacts are binary and
+are better inspected through the API download endpoint.
+
+For a graphical browser, run
+[Redis Insight](https://redis.io/docs/latest/operate/redisinsight/install/install-on-docker/)
+on the Compose network:
+
+```sh
+docker run -d \
+  --name redisinsight \
+  --network nurse-scheduling-backend_default \
+  -p 127.0.0.1:5540:5540 \
+  -v redisinsight:/data \
+  redis/redisinsight:latest
+```
+
+Open `http://localhost:5540` and add a database with `redis://default@redis:6379`. Filter the Browser view with
+`nurse_scheduling:jobs:v0:*`.
+
+When Redis Insight runs on a remote VM, forward its locally bound port before
+opening it in a local browser:
+
+```sh
+ssh -L 5540:127.0.0.1:5540 user@your-server
+```
+
+Keep Redis and Redis Insight off public interfaces. Redis Insight can modify or
+delete stored data.
+
+To run one backend worker with process-local memory and no Redis service, use
+the pre-Redis deployment configuration:
+
+```sh
+cd docker
+docker compose -f compose.backend.memory.yml up -d --build
+```
+
+The bundled Redis service uses its default RDB snapshot policy with a persistent
+volume. Enable AOF or use a managed persistence policy when the deployment
+requires a smaller data-loss window after an abrupt Redis or host failure.
 
 ### Documentation
 

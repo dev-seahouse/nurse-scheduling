@@ -4,10 +4,18 @@ ruamel.yaml
 pydantic
 openpyxl # For XLSX output support
 jinja2 # For prettifying output
+# For more solvers support
+pulp==3.3.2
+# Keep this aligned with the HiGHS ABI bundled by OR-Tools 9.15.
+highspy==1.12.0
+pyscipopt==6.2.1
 # For CI
 pytest
 pytest-cov
+fakeredis
+httpx2
 ruff
 # For web backend
 fastapi[standard]
 python-multipart
+redis

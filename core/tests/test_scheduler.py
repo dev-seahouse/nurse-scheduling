@@ -61,6 +61,64 @@ def test_scheduler_accepts_singapore_country():
     scheduler.schedule(content)
 
 
+def test_scheduler_rejects_normalized_selector_without_backend(monkeypatch):
+    content = _load_valid_yaml_bytes()
+    unsupported = scheduler.SolverSelector(
+        backend="unsupported",
+        api=None,
+        engine="unsupported",
+        canonical="unsupported",
+    )
+    monkeypatch.setattr(scheduler, "normalize_solver_selector", lambda _solver: unsupported)
+
+    with pytest.raises(ValueError, match="Unsupported solver configuration"):
+        scheduler.schedule(content, solver="unsupported")
+
+
+@pytest.mark.parametrize(
+    ("raw_selector", "canonical", "api", "engine"),
+    [
+        ("ortools/cp-sat", "ortools/cp-sat", "cp-sat", "cp-sat"),
+        ("ortools/mpsolver/cbc", "ortools/mpsolver/cbc", "mpsolver", "cbc"),
+        ("ortools/mpsolver/scip", "ortools/mpsolver/scip", "mpsolver", "scip"),
+        ("ortools/mpsolver/cp-sat", "ortools/mpsolver/cp-sat", "mpsolver", "cp-sat"),
+        ("ortools/mpsolver/bop", "ortools/mpsolver/bop", "mpsolver", "bop"),
+        ("ortools/mathopt/gscip", "ortools/mathopt/gscip", "mathopt", "gscip"),
+        ("ortools/mathopt/cp-sat", "ortools/mathopt/cp-sat", "mathopt", "cp-sat"),
+        ("ortools/mathopt/highs", "ortools/mathopt/highs", "mathopt", "highs"),
+        ("pulp/cbc", "pulp/cbc", None, "cbc"),
+        ("pulp/cuopt", "pulp/cuopt", None, "cuopt"),
+        ("pulp/glpk", "pulp/glpk", None, "glpk"),
+        ("pulp/highs", "pulp/highs", None, "highs"),
+        ("pulp/scip", "pulp/scip", None, "scip"),
+    ],
+)
+def test_normalize_solver_selector(raw_selector, canonical, api, engine):
+    selector = scheduler.normalize_solver_selector(raw_selector)
+
+    assert selector.canonical == canonical
+    assert selector.api == api
+    assert selector.engine == engine
+
+
+@pytest.mark.parametrize(
+    "raw_selector",
+    [
+        "ortools/cbc",
+        "ortools/scip",
+        "ortools/sat",
+        "ortools/bop",
+        "ortools/mpsolver/glop",
+        "ortools/mathopt/glop",
+        "ortools/mathopt/gurobi",
+        "ortools/native/cp-sat",
+    ],
+)
+def test_normalize_solver_selector_rejects_unsupported_hierarchies(raw_selector):
+    with pytest.raises(ValueError):
+        scheduler.normalize_solver_selector(raw_selector)
+
+
 def test_scheduler_rejects_invalid_avoid_solution_value():
     content = _load_valid_yaml_bytes()
     avoid_solution = {(0, 0, 0): 2}
@@ -629,7 +687,28 @@ def test_scheduler_ortools_prettify_progress_includes_export_info():
     assert all(sum(len(notes) for notes in event.cell_export_info["comments"].values()) == 1 for event in solver_events)
 
 
-def test_scheduler_unknown_status_raises(monkeypatch):
+def test_scheduler_unknown_status_returns_typed_no_result(monkeypatch):
+    content = _load_valid_yaml_bytes()
+
+    monkeypatch.setattr(
+        "nurse_scheduling.solver_ortools_cp_sat.ORToolsSolver.solve",
+        lambda *args, **kwargs: SolverStatus.UNKNOWN,
+    )
+    monkeypatch.setattr(
+        "nurse_scheduling.solver_ortools_cp_sat.ORToolsSolver.get_status_name",
+        lambda *args, **kwargs: SolverStatus.UNKNOWN.value,
+    )
+    monkeypatch.setattr(
+        "nurse_scheduling.solver_ortools_cp_sat.ORToolsSolver.get_statistics",
+        lambda *args, **kwargs: {"branches": 0, "conflicts": 0, "wall_time": 0.0},
+    )
+
+    result = scheduler.schedule(content)
+
+    assert result == scheduler.ScheduleResult(None, None, None, "UNKNOWN", None)
+
+
+def test_scheduler_rejects_unexpected_status(monkeypatch):
     content = _load_valid_yaml_bytes()
 
     monkeypatch.setattr("nurse_scheduling.solver_ortools_cp_sat.ORToolsSolver.solve", lambda *args, **kwargs: "MYSTERY")
@@ -637,7 +716,7 @@ def test_scheduler_unknown_status_raises(monkeypatch):
         "nurse_scheduling.solver_ortools_cp_sat.ORToolsSolver.get_status_name", lambda *args, **kwargs: "MYSTERY"
     )
 
-    with pytest.raises(ValueError, match="No solution found! Status: MYSTERY"):
+    with pytest.raises(ValueError, match="Unexpected solver status: MYSTERY"):
         scheduler.schedule(content)
 
 

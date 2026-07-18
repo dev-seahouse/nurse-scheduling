@@ -50,7 +50,7 @@ def get_regression_testcases() -> list[str]:
     ]
 
 
-def run_schedule_regression_test() -> None:
+def run_schedule_regression_test(solver: str = "ortools/cp-sat") -> None:
     tests = get_regression_testcases()
     total_tests = len(tests)
     error_count = 0
@@ -73,7 +73,7 @@ def run_schedule_regression_test() -> None:
                 expected_err = f.read()
             # Use pytest.raises without the match parameter to catch the error first
             with pytest.raises((ValidationError, ValueError)) as exc_info:
-                nurse_scheduling.schedule(file_content)
+                nurse_scheduling.schedule(file_content, solver=solver)
             # Then verify the error message contains the expected text
             logging.info(f"Expected error: {expected_err.strip()}")
             logging.info(f"Actual error: {str(exc_info.value)}")
@@ -90,10 +90,12 @@ def run_schedule_regression_test() -> None:
         try:
             df, solution, score, status, _cell_export_info = nurse_scheduling.schedule(
                 file_content,
+                solver=solver,
             )
             df2, _solution2, score2, _status2, _cell_export_info2 = nurse_scheduling.schedule(
                 file_content,
                 avoid_solution=solution,
+                solver=solver,
             )
         except ValidationError as e:
             logging.debug(f"Validation error for '{base_filepath}': {e}")
