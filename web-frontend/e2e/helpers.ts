@@ -135,7 +135,7 @@ export async function mockOptimizeAndExport(
     });
   }
 
-  await page.route(`${E2E_BACKEND_API_URL}/health`, async route => {
+  await page.route(`${E2E_BACKEND_API_URL}/info`, async route => {
     if (route.request().method() !== 'GET') {
       await route.fallback();
       return;
@@ -148,10 +148,9 @@ export async function mockOptimizeAndExport(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        status: 'ok',
-        version: 'test',
-        apiVersion: 'test',
-        appVersion: 'test',
+        status: 'ready',
+        api_version: 'test',
+        app_version: 'test',
       }),
     });
   });

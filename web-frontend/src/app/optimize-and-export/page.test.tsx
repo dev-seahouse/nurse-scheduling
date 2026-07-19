@@ -101,14 +101,14 @@ const createSchedulingData = (overrides = {}) => ({
 
 const healthyResponse = (overrides: Partial<{
   status: string;
-  apiVersion: string;
-  appVersion: string;
+  api_version: string;
+  app_version: string;
 }> = {}) => ({
   ok: true,
   json: vi.fn().mockResolvedValue({
-    status: 'ok',
-    apiVersion: 'alpha',
-    appVersion: 'frontend-test',
+    status: 'ready',
+    api_version: 'alpha',
+    app_version: 'frontend-test',
     ...overrides,
   }),
 });
@@ -273,14 +273,13 @@ describe('OptimizeAndExportPage error handling', () => {
     expect(screen.queryByText(/check that your frontend and backend versions match/i)).not.toBeInTheDocument();
   });
 
-  it('shows backend health status from the configured backend health endpoint', async () => {
+  it('shows backend readiness and version status from the configured info endpoint', async () => {
     (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({
-        status: 'ok',
-        version: 'alpha',
-        apiVersion: 'alpha',
-        appVersion: 'v-test',
+        status: 'ready',
+        api_version: 'alpha',
+        app_version: 'v-test',
       }),
     });
 
@@ -288,7 +287,7 @@ describe('OptimizeAndExportPage error handling', () => {
 
     await expect(screen.findByText('Server: Online')).resolves.toBeInTheDocument();
     expect(screen.getByText(/API version: alpha · Frontend version: frontend-test · Backend version: v-test/)).toBeInTheDocument();
-    expect(fetch).toHaveBeenCalledWith(`${BACKEND_API_URL}/health`, expect.objectContaining({ method: 'GET' }));
+    expect(fetch).toHaveBeenCalledWith(`${BACKEND_API_URL}/info`, expect.objectContaining({ method: 'GET' }));
   });
 
   it('allows an empty solver timeout while editing and clears its run error only after a value change', async () => {
@@ -322,10 +321,9 @@ describe('OptimizeAndExportPage error handling', () => {
     (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({
-        status: 'ok',
-        version: 'alpha',
-        apiVersion: 'alpha',
-        appVersion: 'backend-test',
+        status: 'ready',
+        api_version: 'alpha',
+        app_version: 'backend-test',
       }),
     });
 
@@ -338,10 +336,9 @@ describe('OptimizeAndExportPage error handling', () => {
     (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({
-        status: 'ok',
-        version: 'alpha',
-        apiVersion: 'alpha',
-        appVersion: 'frontend-test',
+        status: 'ready',
+        api_version: 'alpha',
+        app_version: 'frontend-test',
       }),
     });
 
@@ -356,10 +353,9 @@ describe('OptimizeAndExportPage error handling', () => {
     (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({
-        status: 'ok',
-        version: 'alpha',
-        apiVersion: 'alpha',
-        appVersion: 'frontend-test-dirty',
+        status: 'ready',
+        api_version: 'alpha',
+        app_version: 'frontend-test-dirty',
       }),
     });
 

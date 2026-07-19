@@ -17,10 +17,10 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-export interface ServerHealthResponse {
+export interface ServerInfoResponse {
   status: string;
-  apiVersion: string;
-  appVersion: string;
+  api_version: string;
+  app_version: string;
 }
 
 // Default backend used when NEXT_PUBLIC_BACKEND_API_URL is not set at build time.

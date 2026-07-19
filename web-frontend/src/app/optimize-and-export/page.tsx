@@ -33,7 +33,7 @@ import { generateYamlFromState } from '@/utils/yamlGenerator';
 import { GITHUB_PRIVACY_URL } from '@/constants/urls';
 import {
   BACKEND_API_URL,
-  type ServerHealthResponse,
+  type ServerInfoResponse,
 } from '@/app/optimize-and-export/serverSelection';
 import { CURRENT_APP_VERSION, parseVersionParts } from '@/utils/version';
 import {
@@ -108,18 +108,18 @@ function buildApiUrl(endpoint: string, path: string): string {
   return `${normalizeEndpoint(endpoint)}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
-async function fetchServerHealth(
+async function fetchServerInfo(
   endpoint: string,
   timeoutMs = HEALTH_CHECK_TIMEOUT_MS,
   signal?: AbortSignal,
-): Promise<ServerHealthResponse | null> {
+): Promise<ServerInfoResponse | null> {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   const abortController = () => controller.abort();
   signal?.addEventListener('abort', abortController);
 
   try {
-    const response = await fetch(`${endpoint}/health`, {
+    const response = await fetch(`${endpoint}/info`, {
       method: 'GET',
       cache: 'no-store',
       signal: controller.signal,
@@ -129,8 +129,8 @@ async function fetchServerHealth(
       return null;
     }
 
-    const health = await response.json() as ServerHealthResponse;
-    return health.status === 'ok' ? health : null;
+    const info = await response.json() as ServerInfoResponse;
+    return info.status === 'ready' ? info : null;
   } catch {
     return null;
   } finally {
@@ -295,7 +295,7 @@ export default function OptimizeAndExportPage() {
   } = useSchedulingData();
 
   const [serverStatus, setServerStatus] = useState<ServerStatus>('checking');
-  const [serverHealth, setServerHealth] = useState<ServerHealthResponse | null>(null);
+  const [serverHealth, setServerHealth] = useState<ServerInfoResponse | null>(null);
   const [prettifyArg, setPrettifyArg] = useState(true);
   const [anonymizeScheduleData, setAnonymizeScheduleData] = useState(true);
   const [timeoutArg, setTimeoutArg] = useState<number | string>(300);
@@ -316,7 +316,7 @@ export default function OptimizeAndExportPage() {
   const savedDownloadUrlRef = useRef<string | null>(null);
   const shouldScrollEventLogToBottomRef = useRef(true);
 
-  const hasVersionMismatch = Boolean(serverHealth && hasAppVersionMismatch(CURRENT_APP_VERSION, serverHealth.appVersion));
+  const hasVersionMismatch = Boolean(serverHealth && hasAppVersionMismatch(CURRENT_APP_VERSION, serverHealth.app_version));
   const isDateDataMissing = !dateData.range?.startDate || !dateData.range?.endDate || dateData.items.length === 0;
   const isPeopleDataMissing = peopleData.items.length === 0;
   const isShiftTypeDataMissing = shiftTypeData.items.length === 0 && shiftTypeData.groups.length === 0;
@@ -400,7 +400,7 @@ export default function OptimizeAndExportPage() {
     const checkId = ++healthCheckIdRef.current;
 
     setServerStatus('checking');
-    void fetchServerHealth(BACKEND_API_URL, HEALTH_CHECK_TIMEOUT_MS, controller.signal).then(health => {
+    void fetchServerInfo(BACKEND_API_URL, HEALTH_CHECK_TIMEOUT_MS, controller.signal).then(health => {
       if (checkId !== healthCheckIdRef.current) {
         return;
       }
@@ -842,7 +842,7 @@ export default function OptimizeAndExportPage() {
                   {serverHealth && (
                     <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
                       <p>
-                        API version: {serverHealth.apiVersion} · Frontend version: {CURRENT_APP_VERSION} · Backend version: {serverHealth.appVersion}
+                        API version: {serverHealth.api_version} · Frontend version: {CURRENT_APP_VERSION} · Backend version: {serverHealth.app_version}
                       </p>
                       {hasVersionMismatch && (
                         <p className="mt-1 font-medium text-amber-700">

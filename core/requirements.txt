@@ -13,9 +13,9 @@ pyscipopt==6.2.1
 pytest
 pytest-cov
 fakeredis
-httpx2
 ruff
 # For web backend
 fastapi[standard]
+httpx
 python-multipart
 redis
