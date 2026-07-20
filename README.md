@@ -533,7 +533,7 @@ For a graphical browser, run
 on the Compose network:
 
 ```sh
-docker run -d \
+docker run --rm \
   --name redisinsight \
   --network nurse-scheduling-backend_default \
   -p 127.0.0.1:5540:5540 \
@@ -591,7 +591,7 @@ mkdocs build
 
 ## Acknowledgments
 
-This project would not have been possible without the contributors in [CONTRIBUTORS.md](CONTRIBUTORS.md).
+This project would not have been possible without the contributors in [CONTRIBUTORS.md](https://github.com/j3soon/nurse-scheduling/blob/dev/CONTRIBUTORS.md).
 
 ## License
 
