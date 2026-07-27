@@ -21,6 +21,14 @@ export interface ServerInfoResponse {
   status: string;
   api_version: string;
   app_version: string;
+  jobs?: {
+    running: number;
+    queued: number;
+    cancelling: number;
+  };
+  workers?: {
+    online: number;
+  };
 }
 
 export interface ServerInfoCheckResult {
@@ -31,11 +39,12 @@ export interface ServerInfoCheckResult {
 
 export const LOCAL_BACKEND_API_URL = 'http://localhost:8000';
 export const PRODUCTION_BACKEND_API_URL = 'https://api.nursescheduling.org';
+export const SECONDARY_BACKEND_API_URL = 'https://api-secondary.nursescheduling.org';
 export const SHOULD_DISABLE_PRODUCTION_BACKEND_API = process.env.NODE_ENV === 'test'
   || process.env.NEXT_PUBLIC_DISABLE_HOSTED_OPTIMIZE_API === '1';
 export const BACKEND_API_CANDIDATES = SHOULD_DISABLE_PRODUCTION_BACKEND_API
   ? [LOCAL_BACKEND_API_URL]
-  : [LOCAL_BACKEND_API_URL, PRODUCTION_BACKEND_API_URL];
+  : [LOCAL_BACKEND_API_URL, PRODUCTION_BACKEND_API_URL, SECONDARY_BACKEND_API_URL];
 export const INITIAL_BACKEND_API_URL = BACKEND_API_CANDIDATES[0];
 
 export function selectOfflineFallbackBackendApiUrl(candidates: string[]): string {
