@@ -2,20 +2,155 @@
 
 This deployment scaffold publishes the FastAPI backend through Cloudflare
 Tunnel for `api.nursescheduling.org`. Cloudflare terminates public HTTPS, while
-`cloudflared` connects outbound from the VM to the API container.
+`cloudflared` forwards requests to NGINX on a Docker network.
 
 ## Cloudflare Tunnel
 
 - Create a [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/setup/).
 - Add a public hostname for `api.nursescheduling.org`.
-- Point the hostname service to `http://api:8000`.
+- Point the hostname service to `http://nginx:8080`. NGINX sends
+  `/ai/*` to the AI service and all other paths to the optimization API.
 - Copy `.env.example` to `.env`.
 - Set `CLOUDFLARE_TUNNEL_TOKEN` in `.env` to the token from the dashboard.
+- Set `API_AUTH_TOKEN` or `API_AUTH_TOKENS` in `.env`. The deployment image
+  requires at least one key.
 - Enable [Always Use HTTPS](https://developers.cloudflare.com/ssl/edge-certificates/additional-options/always-use-https/).
 - (Optional) Add a WAF/rate limit rule for `POST /optimize`.
 - Keep ports `80` and `443` closed on the VM unless another service needs them.
 
 > We used Cloudflare Tunnel for ease of setup, but you can easily switch to NGINX and Certbot if you have a dedicated public IP and are comfortable exposing it to the internet.
+
+## API Authentication
+
+Compose deployments are internet-facing, so they authenticate by default.
+`Dockerfile.api` and `Dockerfile.api.staging` set `API_AUTH_REQUIRED=true` in the
+image, which makes an empty credential set a startup failure:
+
+```text
+API_AUTH_REQUIRED is set, so API_AUTH_TOKEN or API_AUTH_TOKENS must not be empty
+```
+
+Generate keys and put either the legacy single key or identified keys in the
+environment file:
+
+```sh
+openssl rand -base64 32
+```
+
+```dotenv
+# Backward-compatible single key
+API_AUTH_TOKEN=generated-key
+
+# Or multiple static keys
+API_AUTH_TOKENS='{"institution-a":"generated-key","person-b":"another-generated-key"}'
+```
+
+IDs may contain letters, numbers, underscores, and hyphens. `legacy` is
+reserved for `API_AUTH_TOKEN`. IDs are used only in server logs and are not
+returned to clients. Clients still send only the key. Both settings may be used during
+migration, but IDs and keys must be unique. Remove a pair and restart the
+service to revoke it.
+
+Serving a Compose deployment with no authentication is possible but has to be
+chosen, by setting `API_AUTH_REQUIRED=false` in `.env`. That overrides the value
+baked into the image.
+
+Running the server outside these images leaves `API_AUTH_REQUIRED` unset, so
+local development stays unauthenticated with no extra configuration.
+
+Use at least 16 characters per key. When `API_AUTH_REQUIRED=true`, the backend
+rejects shorter keys. When it is `false`, a shorter key is accepted with a
+warning for local testing. Requests present only the key as a bearer credential:
+
+```sh
+curl -H "Authorization: Bearer ${AUTH_KEY}" https://api.nursescheduling.org/optimize/options
+```
+
+`GET /info` and `GET /ready` stay public so clients and deployment probes can
+discover the deployment without credentials. `/info` reports
+`"auth": {"required": true, "scheme": "bearer"}`, which the frontend uses to
+prompt for a token before calling a protected route. Every other application
+route, including `/` and all of `/optimize`, answers `401` with a
+`WWW-Authenticate: Bearer` header when the key is missing or wrong. Keys are
+resolved through a process-local keyed fingerprint map, then compared in
+constant time. A request does not scan every configured key.
+
+When authentication is configured, the generated `/openapi.json`, `/docs`, and
+`/redoc` routes are disabled and return `404`.
+
+Running the backend outside Compose leaves both key settings unset, so local
+development stays unauthenticated and needs no frontend changes.
+
+The diagnostic service reads `DIAGNOSTIC_AUTH_TOKEN`, which defaults to
+`API_AUTH_TOKEN`. When using only `API_AUTH_TOKENS`, set
+`DIAGNOSTIC_AUTH_TOKEN` to one of its keys.
+
+The AI service in both backend Compose files applies the same secure default
+with `AI_AUTH_REQUIRED=true`. Set `AI_AUTH_TOKEN` or `AI_AUTH_TOKENS` before
+starting Compose. The latter uses a JSON object mapping IDs to keys. To
+deliberately serve without AI authentication, set `AI_AUTH_REQUIRED=false` in
+`docker/.env` and leave both settings empty. Native runs leave required mode
+disabled, although setting either one still enables bearer authentication.
+
+Both Compose variants enable AI chat logging through a fixed private PostgreSQL
+service connection. The database uses the persistent `postgres-ai-data` volume
+and is not published on a host port. See
+[durable chat logging](../docs/content/ai-assistant.md#durable-chat-logging) for
+retention and failure behavior.
+
+Cloudflared and NGINX share `tunnel`. NGINX and the API share `api`, which AI
+also uses to call the optimizer. NGINX and AI share `ai` for public AI routes.
+The diagnostic service joins `tunnel`. The API joins `redis`, while AI joins
+`postgres`. The optional inspection UIs join only the network for the
+datastore they inspect. Docker allocates network addresses, so production and
+staging can run on one host without configured subnets.
+
+For an existing deployment, inspect its project networks with
+`docker network inspect` and check for the `com.docker.compose.config-hash`
+label. Compose may reuse an older network without that label and retain its
+fixed subnet. If a network lacks the label, recreate the affected project from
+the `docker/` directory. For production:
+
+```sh
+docker compose --env-file .env -f compose.backend.yml down
+docker compose --env-file .env -f compose.backend.yml up -d --build
+```
+
+For staging:
+
+```sh
+docker compose --env-file .env.staging -f compose.backend.yml down
+APP_VERSION="$(git -C .. describe --tags --always --dirty)" \
+  docker compose --env-file .env.staging -f compose.backend.yml up -d --build
+```
+
+Use `compose.backend.memory.yml` instead when that is the deployed variant.
+Keep the deployment's project name and environment file, and omit `-v` from
+`down` to preserve named volumes.
+
+Remove obsolete `*_NETWORK_SUBNET`, `*_NETWORK_DYNAMIC_RANGE`,
+`*_NETWORK_GATEWAY`, `NGINX_API_IP`, `CLOUDFLARED_TUNNEL_IP`, and
+`FORWARDED_ALLOW_IPS` settings from existing env files. Keep the Cloudflare
+Tunnel hostname service at `http://nginx:8080`. NGINX replaces public
+`X-Forwarded-For` with Cloudflare's [`CF-Connecting-IP`](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-connecting-ip).
+Uvicorn accepts that header from any local container, so this setup assumes
+sibling containers are
+trusted. Do not publish the API or AI ports directly to the internet.
+
+For local inspection, start the loopback-only pgAdmin UI and open
+`http://127.0.0.1:5050`:
+
+```sh
+docker compose -f compose.backend.yml --profile inspection run --rm --service-ports pgadmin
+```
+
+See [inspect chat history with pgAdmin](../docs/content/ai-assistant.md#inspect-chat-history-with-pgadmin)
+for login, remote SSH forwarding, connection, and query instructions.
+
+NGINX removes the `/ai` prefix before forwarding requests to this
+service and disables response buffering for its streaming endpoints. Keep the
+Cloudflare Tunnel hostname pointed at `http://nginx:8080`, not directly at
+either application container.
 
 ## Start
 
@@ -32,16 +167,30 @@ cd docker
 docker compose -f compose.backend.yml up -d --build
 ```
 
+BuildKit caches the dependency install layer across source changes and reuses
+downloaded packages when the requirements change. Unpinned packages are resolved
+again only when the install layer is invalidated. The pip cache stays out of the
+runtime image.
+
 The API derives one deployment ID from its container and server-launch
 identity and shares it across all Uvicorn workers. The one-shot public
 diagnostic is opt-in and does not start with the normal deployment command.
+The normal Compose startup also starts one experimental AI worker. When using
+E2B, this worker builds and publishes its sandbox template before it becomes
+ready. Configure the AI block in `.env` before running:
+
+```sh
+docker compose -f compose.backend.yml up -d --build
+```
+
+The same behavior applies to `compose.backend.memory.yml`.
 
 For staging, create a separate ignored environment file and use a staging-only
 Cloudflare Tunnel token:
 
 ```sh
 cp .env.staging.example .env.staging
-# Set CLOUDFLARE_TUNNEL_TOKEN and DIAGNOSTIC_TARGET_URL in .env.staging.
+# Set the tunnel token, backend auth keys, and diagnostic target in .env.staging.
 APP_VERSION="$(git -C .. describe --tags --always --dirty)" \
   docker compose --env-file .env.staging -f compose.backend.yml up -d --build
 ```
@@ -50,11 +199,15 @@ The staging environment selects `Dockerfile.api.staging`, which copies the
 current repository's `core/` directory into the image instead of cloning
 GitHub. The host derives the app version before the build, and the Dockerfile
 writes it to `.app-version` in the image. Linked Git worktrees are supported
-and `.git` stays out of the build context and final image. Staging also sets
+and `.git` stays out of the build context and final image. Staging shares the
+BuildKit pip cache with production and sets
 `COMPOSE_PROJECT_NAME=nurse-scheduling-backend-staging`. This overrides the
 default `nurse-scheduling-backend` project name and gives staging its own
 containers, network, and `redis-data` volume. Production and staging can then
-run side by side on the same host.
+run side by side on the same host. Staging also publishes its E2B sandbox to
+`nurse-scheduling-ai-sandbox-staging`, leaving the production template alias
+independent. Existing ignored `.env.staging` files need the same
+`E2B_TEMPLATE` value when upgrading.
 
 Always pass `--env-file .env.staging` for every staging command, including
 `ps`, `logs`, and `down`. Without it, Docker Compose loads `.env` and targets
@@ -72,13 +225,48 @@ with:
 - `JOB_BACKEND=redis`
 - `JOB_REDIS_URL=redis://redis:6379/0`
 - `JOB_REDIS_KEY_PREFIX=nurse_scheduling:jobs:v0`
-- `JOB_CLAIM_LEASE_SECONDS=90` by default
+- `JOB_WORKER_LEASE_SECONDS=90` by default
 - `JOB_MAX_EVENTS_PER_JOB=1000` by default
+- `USAGE_METRICS_ENABLED=true`
+- `USAGE_METRICS_RETENTION_DAYS=30` by default
+
+To inspect this Redis database through a temporary, loopback-only UI, run:
+
+```sh
+docker compose -f compose.backend.yml --profile inspection run --rm --service-ports redisinsight
+```
+
+Open `http://127.0.0.1:5540`. See
+[inspect Redis with RedisInsight](../docs/content/backend-server.md#inspect-redis-with-redisinsight)
+for remote access, key prefixes, and data-safety guidance.
+
+The backend publishes its accepted run options at `GET /optimize/options`.
+The frontend uses this response for solver choices, timeout limits,
+running-job controls, and the prettify default. Configure the response with:
+
+- `OPTIMIZE_SOLVERS`, a comma-separated allowlist of selectors from the
+  [solver reference](https://nursescheduling.org/docs/solvers/)
+- `OPTIMIZE_DEFAULT_SOLVER`
+- `OPTIMIZE_MIN_TIMEOUT_SECONDS`
+- `OPTIMIZE_DEFAULT_TIMEOUT_SECONDS`
+- `OPTIMIZE_MAX_TIMEOUT_SECONDS`
+- `OPTIMIZE_DEFAULT_PRETTIFY`
+
+The safe default exposes only `ortools/cp-sat`.
+
+The API refuses to start if any configured solver is unavailable or a default
+falls outside its advertised choices or range.
+
+A complete compute benchmark creates `claimed-performance.env`. Merge its
+three `CLAIMED_PERFORMANCE_*` values into the deployment environment to publish
+the self-claimed score and provenance at `GET /info`. All three values must be
+set together. The frontend displays the claimed score when the backend is
+selected.
 
 The API container runs multiple Uvicorn workers. Each worker claims jobs
-from Redis and runs at most one optimization job locally. Active workers renew
-their claims; a job is failed and its capacity is released if its worker stops
-renewing the claim.
+from Redis and runs at most one optimization job locally. Workers renew shared
+presence leases while idle and running. A job is failed and its capacity is
+released if its owning worker lease expires.
 
 To run one backend worker with process-local memory and no Redis service, use
 the pre-Redis deployment configuration:
@@ -95,6 +283,8 @@ Check the API through Cloudflare:
 ```sh
 curl https://api.nursescheduling.org/ready
 curl https://api.nursescheduling.org/info
+curl -H "Authorization: Bearer ${API_AUTH_TOKEN}" \
+  https://api.nursescheduling.org/optimize/options
 ```
 
 Run the public healthcheck test:
@@ -117,9 +307,114 @@ docker compose -f compose.backend.yml exec api redis-cli -u redis://redis:6379/0
 
 `/ready` is the minimal deployment probe. `/info` performs the same readiness
 check and adds the app version, deployment ID, process instance ID, process
-start time, job backend, and opaque job store ID. Both responses disable
-caching. The frontend uses `/info` so one request provides readiness and
-version information.
+start time, job backend, opaque job store ID, and whether authentication is
+required. Both responses disable caching and stay public. The frontend uses
+`/info` so one request provides readiness, version, and authentication
+information.
+
+## Weekly Usage Reports
+
+The Redis deployment collects minimal per-job telemetry. Collection is
+enabled by Compose and disabled by default for direct development launches.
+It records job and pseudonymous client IDs, solver, lifecycle timestamps and
+state, queue and runtime durations, outcome, failure code, solver status,
+termination reason, configured timeout, download count, people count, shift type
+count, and schedule date range. It does not retain uploaded YAML or record people
+and shift identifiers, descriptions, filenames, IP addresses, or email addresses.
+
+Buckets run from Sunday at 00:00 through the next Sunday at 00:00 in the host
+machine timezone. Each event belongs to the week when it occurs, so a job
+submitted on Saturday and completed on Sunday can contribute to two different
+weekly buckets. The reporter retrieves only the selected seven-day bucket. The
+API and reporter mount the host timezone files so their boundaries remain
+consistent, including daylight-saving transitions. Reports contain one CSV row
+per associated job. Fields that are not available for an ongoing job remain
+empty. Reporting does not remove telemetry. Rows and weekly membership indexes
+expire after the configured retention interval following the end of their
+event week. The interval defaults to 30 days.
+Values below nine days are rejected because they cannot cover a complete week
+before its reporting deadline.
+Set `USAGE_METRICS_ENABLED=false` in the Docker environment file to disable
+collection for a self-hosted deployment.
+
+The default deployment runs one weekly service that stores delivery status in
+Redis and writes reports to its container log by default. On startup it catches
+up on completed, unsent weeks still covered by telemetry retention. It then
+sleeps until the next reporting deadline.
+
+Get the API key from the Mailgun dashboard under **Send > Sending > Domain
+settings > Sending keys**. If Mailgun reports that the sender domain does not
+exist, verify its records under **Domain settings > DNS records**. Then
+configure these values in `.env`:
+
+```dotenv
+USAGE_REPORT_TRANSPORT=mailgun
+USAGE_REPORT_SUBJECT="Nurse Scheduling backend usage: {week_id}"
+MAILGUN_API_KEY=key-example
+MAILGUN_DOMAIN=mg.example.com
+MAILGUN_FROM="Nurse Scheduling Reports <reports@mg.example.com>"
+MAILGUN_TO=operator@example.com
+```
+
+The reporter warns when Mailgun settings are present while the transport is
+still `stdout`. In `mailgun` mode, it warns and stops when required Mailgun
+settings are missing.
+
+Then start the normal deployment with the reporter:
+
+```sh
+docker compose -f compose.backend.yml up -d --build
+```
+
+The reporter delivers the completed week on Sunday at or shortly after 00:00 in
+the host machine timezone. Set `USAGE_REPORT_LOCAL_HOUR` to another local hour
+from 0 through 23. A Redis-backed guard leaves at least ten minutes between any
+two delivery attempts, including catch-up reports, service restarts, and two
+bounded retries during a weekly run. The scheduler also waits at least ten
+minutes between runs as a safeguard against invalid deadline logic. Delivery
+checkpoints prevent normal duplicate sends. A process failure or ambiguous
+transport error after Mailgun accepts a message but before Redis records the
+checkpoint can still cause a retry and duplicate delivery. `MAILGUN_API_URL`
+accepts Mailgun's HTTPS US or EU v3 endpoint for regional delivery.
+
+`USAGE_REPORT_SUBJECT` controls both the email subject and the first line of the
+report body. It supports the optional `{week_id}` placeholder. Invalid or
+multiline templates stop the reporter during startup.
+
+Trigger completed unsent reports immediately, without waiting for Sunday:
+
+```sh
+docker compose -f compose.backend.yml run --rm \
+  usage-reporter python -m nurse_scheduling.server.usage_report --once
+```
+
+The command exits with a nonzero status if any delivery fails.
+
+To send the newest retained week immediately, including the current partial
+week or one already checkpointed as sent, add `--force`:
+
+```sh
+docker compose -f compose.backend.yml run --rm \
+  usage-reporter python -m nurse_scheduling.server.usage_report --once --force
+```
+
+The command regenerates the entire selected Sunday-to-Sunday bucket from
+retained telemetry instead of sending only changes since the previous report.
+For the current week, it includes data recorded so far without marking the week
+complete, so the normal full report is still delivered after Sunday. Forced
+sends bypass the shared delivery interval but retain the per-week lock. No
+retained telemetry or a held lock is reported as an error with a nonzero exit
+status. A failed forced resend preserves any previous successful delivery
+checkpoint. `--force` is rejected without `--once`.
+
+For a one-time local rendering, use the default `stdout` transport. This marks
+the report as delivered, so use an isolated Redis namespace if it must still be
+emailed later:
+
+```sh
+docker compose -f compose.backend.yml run --rm usage-reporter \
+  python -m nurse_scheduling.server.usage_report --once
+```
 
 ## Public Diagnostic
 
@@ -130,6 +425,14 @@ configured public URL:
 ```sh
 docker compose -f compose.backend.yml --profile diagnostic \
   run --rm --no-deps diagnostic
+```
+
+After starting the staging deployment, run the diagnostic against its
+configured public URL with the staging environment:
+
+```sh
+docker compose --env-file .env.staging -f compose.backend.yml \
+  --profile diagnostic run --rm --no-deps diagnostic
 ```
 
 Run it directly from a repository checkout, outside Docker Compose, after
@@ -221,10 +524,16 @@ When `JOB_BACKEND=redis`, optimization jobs, SSE events, YAML inputs,
 and XLSX outputs are stored in Redis so status, event, and download requests can
 be served by any backend worker.
 
-The bundled Redis service uses the image's default RDB snapshot policy and the
-`redis-data` volume. This is sufficient for multi-worker coordination, but an
-abrupt Redis or host failure can lose writes since the latest snapshot. A
-deployment that requires a smaller recovery-point window should enable Redis
-AOF persistence or use a managed Redis service with an appropriate persistence
-policy. AOF is not required for the backend's job-sharing behavior and adds
-disk I/O for stored YAML, event streams, and XLSX artifacts.
+The bundled Redis service retains an AOF and a less-frequent RDB fallback in the
+`redis-data` volume. The AOF uses `appendfsync everysec`, which limits the usual
+abrupt-failure exposure to approximately the latest second while adding disk
+I/O for stored YAML, event streams, XLSX artifacts, and telemetry. A single RDB
+rule creates a snapshot after six hours when at least one write has occurred,
+so an RDB-only recovery can be up to six hours behind. Redis also receives a
+one-minute Compose shutdown grace period so its final blocking RDB save can
+finish during planned restarts. Normal `restart` and `down` operations retain
+the named volume. `down -v` removes all persisted Redis data. Back up the volume
+when recovery from host or volume loss is required.
+
+This configuration assumes a new Redis volume. Do not switch an existing
+RDB-only volume to this configuration without migrating or discarding its data.

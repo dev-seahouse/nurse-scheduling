@@ -20,7 +20,7 @@
 // This test is mostly AI generated.
 
 import { expect, test } from './test';
-import { disableModalDialogs, disableOptimizeAnonymization, mockOptimizeAndExport, setDateRange } from './helpers';
+import { disableModalDialogs, disableOptimizeAnonymization, mockOptimizeAndExport, seedMinimalSchedulingState, setDateRange } from './helpers';
 
 test('optimize request body reflects live page edits without going through Save and Load edit mode', async ({ page }) => {
   /*
@@ -28,12 +28,10 @@ test('optimize request body reflects live page edits without going through Save 
    * 1. Start from a reset schedule and confirm the original person exists.
    * 2. Rename the person directly from the People page.
    * 3. Trigger optimize with a mocked backend.
-   * 4. Confirm yaml_content contains the renamed person and not the original one.
+   * 4. Confirm the posted YAML contains the renamed person and not the original one.
    */
   await disableModalDialogs(page);
-  await page.goto('/');
-  await page.getByRole('button', { name: 'New Schedule' }).click();
-  await page.getByRole('button', { name: 'Reset Data' }).click();
+  await seedMinimalSchedulingState(page);
   await setDateRange(page);
 
   await page.goto('/people');

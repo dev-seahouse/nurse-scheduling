@@ -21,24 +21,26 @@ import logging
 import threading
 
 from .jobs.controller import JobController
-
+from .retry import RepeatedFailure
 
 server_logger = logging.getLogger("nurse_scheduling.server")
 
 
 class JobMaintenance:
-    """Periodically expire lost-worker claims and retained job history."""
+    """Periodically expire lost-worker jobs, leases, and retained history."""
 
     def __init__(self, controller: JobController, *, interval_seconds: float):
         """Configure periodic job cleanup without starting its thread."""
         self._controller = controller
-        """Controller that expires lost-worker claims and retained job history."""
+        """Controller that expires lost-worker jobs, leases, and retained history."""
         self._interval_seconds = interval_seconds
         """Delay between maintenance passes."""
         self._stop = threading.Event()
         """Signal that interrupts the maintenance wait and stops the loop."""
         self._thread: threading.Thread | None = None
         """Daemon maintenance thread, or `None` when no thread is retained."""
+        self._failures = RepeatedFailure(base_delay_seconds=interval_seconds, max_delay_seconds=interval_seconds * 4)
+        """Quiets and slows repeated passes while the store is unavailable."""
 
     def start(self) -> None:
         """Start the daemon maintenance loop unless it is already running."""
@@ -58,13 +60,21 @@ class JobMaintenance:
             self._thread = None
 
     def _run(self) -> None:
-        """Apply claim expiry and retention cleanup at each interval.
+        """Apply worker lease and retention cleanup at each interval.
 
         Failures are logged without terminating future maintenance passes.
         """
-        while not self._stop.wait(self._interval_seconds):
+        while not self._stop.wait(self._failures.delay_seconds()):
             try:
                 self._controller.expire_worker_claims()
                 self._controller.expire_jobs()
             except Exception:
-                server_logger.exception("[server:maintenance] job retention check failed")
+                if self._failures.report():
+                    server_logger.exception("[server:maintenance] job retention check failed")
+                continue
+            ended_failures = self._failures.recovered()
+            if ended_failures:
+                server_logger.warning(
+                    "[server:maintenance] resumed after %d failed passes",
+                    ended_failures,
+                )

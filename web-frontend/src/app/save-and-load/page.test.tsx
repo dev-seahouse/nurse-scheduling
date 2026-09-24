@@ -572,6 +572,7 @@ describe('SaveAndLoadPage', () => {
 
     expect(createSpy).toHaveBeenCalled();
     expect(revokeSpy).toHaveBeenCalledWith('blob:mock-url');
+    expect(screen.getByRole('link', { name: 'Star the project on GitHub' })).toBeInTheDocument();
   });
 
   it('uses a stable date-based filename for downloads', async () => {
@@ -693,6 +694,8 @@ describe('SaveAndLoadPage', () => {
     await user.click(screen.getByText('Anonymize YAML'));
     await user.click(screen.getByRole('button', { name: /download anonymized/i }));
 
+    // A post-download re-render re-invokes generateYamlFromState for the live YAML view,
+    // so assert the anonymized snapshot was one of the calls rather than the last one.
     expect(mockGenerateYamlFromState).toHaveBeenCalledWith(
       expect.objectContaining({
         people: {
@@ -751,6 +754,8 @@ describe('SaveAndLoadPage', () => {
     await user.click(screen.getByRole('checkbox', { name: /scatter shift requests/i }));
     await user.click(screen.getByRole('button', { name: /download anonymized/i }));
 
+    // A post-download re-render re-invokes generateYamlFromState for the live YAML view,
+    // so assert the scattered snapshot was one of the calls rather than the last one.
     expect(mockGenerateYamlFromState).toHaveBeenCalledWith(
       expect.objectContaining({
         people: { items: [{ id: 'P1', description: '' }], groups: [] },

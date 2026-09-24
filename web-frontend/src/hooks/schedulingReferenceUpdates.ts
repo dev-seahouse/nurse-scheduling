@@ -18,6 +18,7 @@
  */
 
 import { DataType, Group, ShiftAffinityPreference, ShiftCountPreference, ShiftRequestPreference, ShiftTypeCoveringPreference, ShiftTypeRequirementsPreference, ShiftTypeSuccessionsPreference, SHIFT_AFFINITY, SHIFT_COUNT, SHIFT_REQUEST, SHIFT_TYPE_COVERING, SHIFT_TYPE_REQUIREMENT, SHIFT_TYPE_SUCCESSIONS } from '@/types/scheduling';
+import { truncateHistoryAfterUnusable } from '@/utils/personHistory';
 import { filterReferenceIdTree, mapReferenceIdTree, ReferenceIdTree } from '@/utils/referenceIds';
 import { SchedulingState } from './schedulingState';
 
@@ -79,7 +80,7 @@ export const applyPeopleHistoryForIdDeletion = (
       ...state.people,
       items: state.people.items.map(person => ({
         ...person,
-        history: person.history?.map(shiftTypeId => deletedIdSet.has(shiftTypeId) ? '' : shiftTypeId) || []
+        history: truncateHistoryAfterUnusable(person.history || [], id => deletedIdSet.has(id))
       }))
     }
   };

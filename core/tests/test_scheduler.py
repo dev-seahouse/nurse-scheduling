@@ -43,22 +43,8 @@ def _load_valid_yaml_bytes() -> bytes:
 def test_scheduler_rejects_unsupported_api_version():
     content = _load_valid_yaml_bytes().replace(b"apiVersion: alpha", b"apiVersion: beta")
 
-    with pytest.raises(NotImplementedError, match="Unsupported API version"):
+    with pytest.raises(ValueError, match="Unsupported API version"):
         scheduler.schedule(content)
-
-
-def test_scheduler_rejects_unsupported_country():
-    content = _load_valid_yaml_bytes() + b"\ncountry: US\n"
-
-    with pytest.raises(ValueError, match="Country US is not supported yet"):
-        scheduler.schedule(content)
-
-
-def test_scheduler_accepts_singapore_country():
-    content = _load_valid_yaml_bytes() + b"\ncountry: SG\n"
-
-    # Should not raise; the scheduler only validates the country code without using it.
-    scheduler.schedule(content)
 
 
 def test_scheduler_rejects_normalized_selector_without_backend(monkeypatch):
@@ -86,8 +72,6 @@ def test_scheduler_rejects_normalized_selector_without_backend(monkeypatch):
         ("ortools/mathopt/gscip", "ortools/mathopt/gscip", "mathopt", "gscip"),
         ("ortools/mathopt/cp-sat", "ortools/mathopt/cp-sat", "mathopt", "cp-sat"),
         ("ortools/mathopt/highs", "ortools/mathopt/highs", "mathopt", "highs"),
-        ("pulp/cbc", "pulp/cbc", None, "cbc"),
-        ("pulp/cuopt", "pulp/cuopt", None, "cuopt"),
         ("pulp/glpk", "pulp/glpk", None, "glpk"),
         ("pulp/highs", "pulp/highs", None, "highs"),
         ("pulp/scip", "pulp/scip", None, "scip"),
@@ -125,6 +109,31 @@ def test_scheduler_rejects_invalid_avoid_solution_value():
 
     with pytest.raises(ValueError, match="Invalid value: 2"):
         scheduler.schedule(content, avoid_solution=avoid_solution)
+
+
+def test_scheduler_forces_complete_solution():
+    content = _load_valid_yaml_bytes()
+
+    result = scheduler.schedule(content, forced_solution={(0, 0, 0): 1})
+
+    assert result.solution == {(0, 0, 0): 1}
+    assert result.score == 0
+    assert result.solver_status == "OPTIMAL"
+
+
+@pytest.mark.parametrize(
+    ("forced_solution", "expected_message"),
+    [
+        ({}, "1 missing and 0 unexpected"),
+        ({(0, 0, 0): 1, (1, 0, 0): 0}, "0 missing and 1 unexpected"),
+        ({(0, 0, 0): 2}, "Invalid forced solution value: 2"),
+    ],
+)
+def test_scheduler_rejects_invalid_forced_solution(forced_solution, expected_message):
+    content = _load_valid_yaml_bytes()
+
+    with pytest.raises(ValueError, match=expected_message):
+        scheduler.schedule(content, forced_solution=forced_solution)
 
 
 @pytest.mark.parametrize(
@@ -531,13 +540,12 @@ def test_scheduler_model_build_stats_callback_reports_build_steps(monkeypatch):
     )
 
     assert status_name == "FEASIBLE"
-    assert [event.step for event in events[:3]] == [
+    assert [event.step for event in events[:2]] == [
         "create_shift_variables",
         "create_off_variables",
-        "create_lookup_maps",
     ]
-    assert [event.step for event in events[3:]] == ["add_preference", "add_preference"]
-    assert [event.preferenceType for event in events[3:]] == [
+    assert [event.step for event in events[2:]] == ["add_preference", "add_preference"]
+    assert [event.preferenceType for event in events[2:]] == [
         "at most one shift per day",
         "shift type requirement",
     ]
@@ -546,7 +554,7 @@ def test_scheduler_model_build_stats_callback_reports_build_steps(monkeypatch):
     # the LEAVE day-state indicators.
     assert events[1].variablesAdded == 2
     assert events[1].constraintsAdded == 1
-    assert events[3].constraintsAdded == 0
+    assert events[2].constraintsAdded == 0
     assert events[-1].totalVariables >= events[-1].variablesAdded
     assert isinstance(events[-1].to_dict(), dict)
 
@@ -608,7 +616,6 @@ def test_scheduler_emits_phase_progress_events():
         "initializing_solver",
         "creating_shift_variables",
         "creating_off_variables",
-        "creating_lookup_maps",
         "adding_preferences",
         "solving",
         "exporting",

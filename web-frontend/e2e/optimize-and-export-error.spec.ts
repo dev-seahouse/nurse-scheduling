@@ -20,7 +20,8 @@
 // This test is mostly AI generated.
 
 import { expect, test } from './test';
-import { disableModalDialogs, mockOptimizeAndExport, seedSchedulingState } from './helpers';
+import { E2E_BACKEND_API_URL } from './constants';
+import { disableModalDialogs, mockOptimizeAndExport, seedSchedulingState, setDateRange } from './helpers';
 
 test('optimize and export renders backend errors without a stale success state', async ({ page }) => {
   /*
@@ -49,6 +50,7 @@ test('optimize and export renders backend errors without a stale success state',
     preferences: [{ type: 'at most one shift per day' }],
     export: { formatting: [] },
   });
+  await setDateRange(page);
 
   await mockOptimizeAndExport(page, { status: 500, errorDetail: 'solver unavailable' });
 
@@ -61,4 +63,93 @@ test('optimize and export renders backend errors without a stale success state',
 
   await expect(page.getByText('Server error (500): solver unavailable')).toBeVisible();
   await expect(page.getByText('Schedule optimized and downloaded successfully!')).toHaveCount(0);
+});
+
+test('allows an incompatible configured backend with a warning', async ({ page }) => {
+  /*
+   * Steps:
+   * 1. Seed a valid schedule and return reachable backend information for an unsupported API version.
+   * 2. Confirm the missing options endpoint uses legacy defaults.
+   * 3. Inspect the backend details and confirm the warning action sends the request.
+   */
+  await seedSchedulingState(page, {
+    apiVersion: 'test',
+    description: 'incompatible backend seed',
+    dates: {
+      range: { startDate: '2026-05-01', endDate: '2026-05-01' },
+      items: [{ id: '01', description: '' }],
+      groups: [],
+    },
+    people: {
+      items: [{ id: 'P1', description: 'Primary nurse', history: [] }],
+      groups: [],
+      history: [],
+    },
+    shiftTypes: {
+      items: [{ id: 'D', description: 'Day' }],
+      groups: [],
+    },
+    preferences: [],
+    export: { formatting: [] },
+  });
+  await setDateRange(page);
+
+  let optimizationOptionsRequested = false;
+  let optimizeRequested = false;
+  await page.route(`${E2E_BACKEND_API_URL}/info`, async route => {
+    await route.fulfill({
+      status: 200,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        status: 'ready',
+        service_name: 'nurse-scheduling-api',
+        api_version: 'alpha',
+        app_version: 'old-backend',
+        jobs: { running: 1, queued: 3, cancelling: 1 },
+        workers: { online: 2 },
+      }),
+    });
+  });
+  await page.route(`${E2E_BACKEND_API_URL}/optimize/options`, async route => {
+    optimizationOptionsRequested = true;
+    await route.fulfill({
+      status: 404,
+      headers: { 'Access-Control-Allow-Origin': '*' },
+    });
+  });
+  await page.route(`${E2E_BACKEND_API_URL}/optimize`, async route => {
+    optimizeRequested = true;
+    await route.fulfill({
+      status: 422,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ detail: 'old API rejected request' }),
+    });
+  });
+
+  await page.goto('/optimize-and-export');
+
+  await expect(page.getByText('Server: Incompatible')).toBeVisible();
+  await expect(page.getByText('2 active · 3 queued')).toBeVisible();
+  await expect(page.getByText('2 workers')).toBeVisible();
+  // The reason is reachable from the Status icon rather than printed into the server cell.
+  await expect(page.getByLabel(`${E2E_BACKEND_API_URL} status: Incompatible`)).toHaveAttribute(
+    'title',
+    'Incompatible. Unsupported API version "alpha". Expected "0.2.0".'
+  );
+  expect(optimizationOptionsRequested).toBe(true);
+
+  await expect(page.getByText(/API version: alpha \(expected 0\.2\.0\).*Frontend version:/i)).toBeVisible();
+  await expect(page.getByText('Incompatible backend. The request may fail.')).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Solver' })).toHaveValue('ortools/cp-sat');
+  await expect(page.getByRole('spinbutton', { name: 'Solver Timeout' })).toHaveValue('300');
+  await expect(page.getByLabel('Prettify XLSX')).toBeChecked();
+  const optimizeButton = page.getByRole('button', { name: 'Optimize Anyway and Download' });
+  await expect(optimizeButton).toBeEnabled();
+  await optimizeButton.click();
+
+  await expect(page.getByText('Server error (422): old API rejected request')).toBeVisible();
+  expect(optimizeRequested).toBe(true);
 });

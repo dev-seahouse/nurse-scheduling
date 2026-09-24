@@ -51,7 +51,6 @@ def test_probe_defaults_and_round_order():
     )
     assert config.timeout_seconds == 10
     assert config.timeout_grace_seconds == 90
-    assert config.cbc_intermediate_score_testcase == solver_capabilities.CBC_INTERMEDIATE_SCORE_TESTCASE
     assert config.control_timeout_seconds == 60
     assert config.cancel_delay_seconds == 2
     assert config.finish_wait_seconds == 10
@@ -87,13 +86,13 @@ def test_unavailable_timeout_skips_remaining_subprocesses(monkeypatch):
 
     monkeypatch.setattr(solver_capabilities, "_run_round_subprocess", fake_round)
 
-    report = solver_capabilities.probe_solver("pulp/cuopt", solver_capabilities.ProbeConfig())
+    report = solver_capabilities.probe_solver("ortools/cp-sat", solver_capabilities.ProbeConfig())
 
     assert calls == ["timeout"]
     assert [round_report.status for round_report in report.rounds] == [
         "UNAVAILABLE",
         "UNAVAILABLE",
-        "NOT_CONFIRMED",
+        "UNAVAILABLE",
         "UNAVAILABLE",
     ]
     assert report.available is False
@@ -108,14 +107,14 @@ def test_probe_runs_global_and_confirmed_capabilities(monkeypatch):
 
     monkeypatch.setattr(solver_capabilities, "_run_round_subprocess", fake_round)
 
-    report = solver_capabilities.probe_solver("pulp/cbc", solver_capabilities.ProbeConfig())
+    report = solver_capabilities.probe_solver("pulp/highs", solver_capabilities.ProbeConfig())
 
-    assert calls == ["timeout", "cancel", "intermediate-scores"]
+    assert calls == ["timeout", "cancel"]
     assert [round_report.status for round_report in report.rounds] == [
         "PASS",
         "PASS",
         "NOT_CONFIRMED",
-        "PASS",
+        "NOT_CONFIRMED",
     ]
 
 
@@ -200,42 +199,12 @@ def test_timeout_round_applies_registered_graceful_timeout(monkeypatch):
     unconfirmed = solver_capabilities._run_timeout_round(
         object(),
         object(),
-        "pulp/cbc",
+        "pulp/highs",
         config,
     )
 
     assert graceful.status == "FAIL"
     assert unconfirmed.status == "PASS"
-
-
-def test_only_cbc_intermediate_round_uses_simple_testcase(monkeypatch):
-    seen = []
-
-    def fake_submit(_client, testcase, _solver, _timeout):
-        seen.append(testcase)
-        return {"id": "job"}
-
-    monkeypatch.setattr(solver_capabilities, "_submit_job", fake_submit)
-    monkeypatch.setattr(
-        solver_capabilities,
-        "_wait_for_solving",
-        lambda *_args: (None, None, _job(state="failed", result=None, schedule=None)),
-    )
-    config = solver_capabilities.ProbeConfig()
-
-    assert solver_capabilities.REAL_SCENARIO_UNSUITABLE_SOLVERS == {"pulp/cbc"}
-    for solver in ("ortools/cp-sat", "pulp/cuopt", "pulp/cbc"):
-        solver_capabilities._run_timeout_round(object(), object(), solver, config)
-        solver_capabilities._run_intermediate_scores_round(object(), object(), solver, config)
-
-    assert seen == [
-        config.testcase,
-        config.testcase,
-        config.testcase,
-        config.testcase,
-        config.testcase,
-        config.cbc_intermediate_score_testcase,
-    ]
 
 
 def test_cancel_round_checks_terminal_result(monkeypatch):

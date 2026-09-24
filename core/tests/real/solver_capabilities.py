@@ -34,26 +34,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 CORE_ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(CORE_ROOT))
 
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
-from nurse_scheduling.scheduler import normalize_solver_selector  # noqa: E402
-from nurse_scheduling.server.app import create_app  # noqa: E402
-from nurse_scheduling.server.config import ServerSettings  # noqa: E402
-from nurse_scheduling.server.solver_capabilities import (  # noqa: E402
+from nurse_scheduling.scheduler import normalize_solver_selector
+from nurse_scheduling.server.app import create_app
+from nurse_scheduling.server.config import ServerSettings
+from nurse_scheduling.server.solver_capabilities import (
     SOLVER_CAPABILITIES,
     get_solver_capabilities,
 )
-from nurse_scheduling.server.stores.memory import MemoryJobStore  # noqa: E402
-
+from nurse_scheduling.server.stores.memory import MemoryJobStore
 
 REAL_TESTCASE = CORE_ROOT / "tests" / "testcases" / "real" / "large-ward-with-87-people-2025-11.yaml"
-CBC_INTERMEDIATE_SCORE_TESTCASE = CORE_ROOT / "tests" / "testcases" / "basics" / "01_1nurse_1shift_1day.yaml"
-REAL_SCENARIO_UNSUITABLE_SOLVERS = frozenset({"pulp/cbc"})
-"""Solvers that cannot reliably exercise every capability on the large scenario."""
 ROUND_ORDER = ("timeout", "cancel", "finish-now", "intermediate-scores")
 CONFIRMED_SOLVER_CHOICES = tuple(capabilities.value for capabilities in SOLVER_CAPABILITIES)
 RESULT_MARKER = "SOLVER_CAPABILITY_RESULT="
@@ -80,7 +75,6 @@ class ProbeConfig:
     """Runtime limits shared by all solver capability rounds."""
 
     testcase: Path = REAL_TESTCASE
-    cbc_intermediate_score_testcase: Path = CBC_INTERMEDIATE_SCORE_TESTCASE
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     timeout_grace_seconds: float = DEFAULT_TIMEOUT_GRACE_SECONDS
     control_timeout_seconds: int = DEFAULT_CONTROL_TIMEOUT_SECONDS
@@ -214,13 +208,6 @@ def _submit_job(client: TestClient, testcase: Path, solver: str, timeout_seconds
     if response.status_code != 202:
         raise RuntimeError(f"Optimization submission returned HTTP {response.status_code}: {response.text}")
     return response.json()
-
-
-def _round_testcase(name: str, solver: str, config: ProbeConfig) -> Path:
-    """Return the explicit testcase exception for a solver and capability pair."""
-    if solver in REAL_SCENARIO_UNSUITABLE_SOLVERS and name == "intermediate-scores":
-        return config.cbc_intermediate_score_testcase
-    return config.testcase
 
 
 def _early_terminal_report(name: str, job: dict[str, Any]) -> RoundReport:
@@ -363,7 +350,7 @@ def _run_timeout_round(
     config: ProbeConfig,
 ) -> RoundReport:
     """Run the bounded timeout capability check."""
-    created = _submit_job(client, _round_testcase("timeout", solver, config), solver, config.timeout_seconds)
+    created = _submit_job(client, config.testcase, solver, config.timeout_seconds)
     solving_at, _event_id, job = _wait_for_solving(
         store,
         client,
@@ -416,7 +403,7 @@ def _run_intermediate_scores_round(
     """Confirm that a score event is emitted before solver execution ends."""
     created = _submit_job(
         client,
-        _round_testcase("intermediate-scores", solver, config),
+        config.testcase,
         solver,
         config.timeout_seconds,
     )
@@ -499,7 +486,7 @@ def _run_control_round(
     config: ProbeConfig,
 ) -> RoundReport:
     """Run cancellation or early completion against a fresh long-running job."""
-    created = _submit_job(client, _round_testcase(name, solver, config), solver, config.control_timeout_seconds)
+    created = _submit_job(client, config.testcase, solver, config.control_timeout_seconds)
     solving_at, event_id, job = _wait_for_solving(
         store,
         client,
@@ -658,8 +645,6 @@ def _run_round_subprocess(name: str, solver: str, config: ProbeConfig) -> RoundR
         name,
         "--testcase",
         str(config.testcase),
-        "--cbc-intermediate-score-testcase",
-        str(config.cbc_intermediate_score_testcase),
         "--timeout-seconds",
         str(config.timeout_seconds),
         "--timeout-grace-seconds",
@@ -836,7 +821,6 @@ def _json_payload(reports: list[SolverReport], config: ProbeConfig) -> dict[str,
         "config": {
             **asdict(config),
             "testcase": str(config.testcase),
-            "cbc_intermediate_score_testcase": str(config.cbc_intermediate_score_testcase),
         },
         "solvers": [asdict(report) for report in reports],
     }
@@ -865,11 +849,6 @@ def build_parser() -> argparse.ArgumentParser:
     selection.add_argument("--solver", choices=CONFIRMED_SOLVER_CHOICES, help="Probe one configured solver selector.")
     selection.add_argument("--all", action="store_true", help="Probe every solver with a confirmed capability.")
     parser.add_argument("--testcase", type=Path, default=REAL_TESTCASE)
-    parser.add_argument(
-        "--cbc-intermediate-score-testcase",
-        type=Path,
-        default=CBC_INTERMEDIATE_SCORE_TESTCASE,
-    )
     parser.add_argument("--timeout-seconds", type=_positive_int, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--timeout-grace-seconds", type=_positive_float, default=DEFAULT_TIMEOUT_GRACE_SECONDS)
     parser.add_argument(
@@ -890,7 +869,6 @@ def _config_from_args(args: argparse.Namespace) -> ProbeConfig:
     """Translate validated CLI arguments into immutable probe configuration."""
     return ProbeConfig(
         testcase=args.testcase.resolve(),
-        cbc_intermediate_score_testcase=args.cbc_intermediate_score_testcase.resolve(),
         timeout_seconds=args.timeout_seconds,
         timeout_grace_seconds=args.timeout_grace_seconds,
         control_timeout_seconds=args.control_timeout_seconds,
@@ -910,7 +888,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--worker-round requires --solver")
         try:
             report = _run_worker_round(args.worker_round, args.solver, _config_from_args(args))
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             traceback.print_exc()
             report = _round_report(args.worker_round, "FAIL", f"Unhandled worker error: {error}")
         print(f"{RESULT_MARKER}{json.dumps(asdict(report), sort_keys=True)}", flush=True)
@@ -920,8 +898,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("one of --solver or --all is required")
     if not args.testcase.is_file():
         parser.error(f"testcase does not exist: {args.testcase}")
-    if not args.cbc_intermediate_score_testcase.is_file():
-        parser.error(f"CBC intermediate-score testcase does not exist: {args.cbc_intermediate_score_testcase}")
 
     config = _config_from_args(args)
     selectors = CONFIRMED_SOLVER_CHOICES if args.all else (args.solver,)

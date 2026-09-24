@@ -1,6 +1,6 @@
 {
   "name": "web-frontend",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
@@ -17,38 +17,40 @@
     "test:e2e": "playwright test",
     "test:e2e:affected": "../scripts/test_frontend_e2e_affected.sh",
     "test:e2e:ui": "playwright test --ui",
-    "test:e2e:coverage": "rm -rf .e2e-coverage coverage-e2e && E2E_COVERAGE=1 playwright test",
+    "test:e2e:coverage": "rm -rf .e2e-coverage coverage-e2e && E2E_COVERAGE=1 playwright test --reporter=dot --quiet --max-failures=1",
     "coverage:e2e:report": "node scripts/generate-e2e-coverage.mjs"
   },
   "dependencies": {
     "exceljs": "^4.4.0",
     "idb-keyval": "^6.2.6",
-    "js-yaml": "^4.1.1",
+    "js-yaml": "^4.3.1",
     "next": "16.2.6",
     "react": "19.2.6",
     "react-dom": "19.2.6",
-    "react-icons": "^5.6.0",
-    "react-is": "^19.2.7",
-    "recharts": "^3.8.1"
+    "react-icons": "^5.7.0",
+    "react-is": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "recharts": "^3.10.1",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.0",
-    "@playwright/test": "^1.60.0",
-    "@testing-library/jest-dom": "^6.9.1",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@playwright/test": "^1.62.1",
+    "@testing-library/jest-dom": "^6.10.0",
     "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.6.1",
+    "@testing-library/user-event": "^14.6.3",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^25.9.1",
+    "@types/node": "^25.9.5",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "@vitest/coverage-v8": "^4.1.7",
-    "eslint": "^9.39.4",
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^9.39.5",
     "eslint-config-next": "16.2.6",
     "jsdom": "^29.1.1",
-    "monocart-coverage-reports": "^2.12.11",
-    "tailwindcss": "^4.3.0",
+    "monocart-coverage-reports": "^2.12.12",
+    "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.10"
   },
   "overrides": {
     "@types/react": "19.2.14",

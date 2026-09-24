@@ -20,19 +20,29 @@
 // The Optimize and Export page for Tab "11. Optimize and Export"
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { FiDownload, FiAlertCircle, FiCheckCircle, FiLoader, FiWifi, FiWifiOff, FiActivity, FiRefreshCw } from 'react-icons/fi';
+import { FiDownload, FiAlertCircle, FiAlertTriangle, FiCheckCircle, FiLoader, FiLock, FiRefreshCw, FiWifi, FiWifiOff, FiActivity } from 'react-icons/fi';
 import OptimizationProgressChart, { OptimizationProgressPoint } from '@/components/OptimizationProgressChart';
-import ContractedHoursValidationNotice from '@/components/ContractedHoursValidationNotice';
 import NumberInput from '@/components/NumberInput';
+import BackendTokenField, { isValidBackendToken } from '@/components/BackendTokenField';
+import PageDocumentationLink from '@/components/PageDocumentationLink';
+import StarRepoNudge from '@/components/StarRepoNudge';
+import ContractedHoursValidationNotice from '@/components/ContractedHoursValidationNotice';
 import { useSchedulingData } from '@/hooks/useSchedulingData';
 import { anonymizeSchedulingStateWithMapping } from '@/utils/anonymizeSchedulingState';
 import { restorePeopleIdsInXlsx } from '@/utils/restorePeopleIdsInXlsx';
 import { generateYamlFromState } from '@/utils/yamlGenerator';
-import { GITHUB_PRIVACY_URL } from '@/constants/urls';
+import { DOCUMENTATION_URLS, GITHUB_PRIVACY_URL } from '@/constants/urls';
 import {
   BACKEND_API_URL,
+  buildAuthHeaders,
+  EXPECTED_BACKEND_SERVICE_NAME,
+  isOptimizationOptionsResponse,
+  normalizeEndpoint,
+  parseAuthRequirement,
+  SUPPORTED_BACKEND_API_VERSION,
+  type OptimizationOptionsResponse,
   type ServerInfoResponse,
 } from '@/app/optimize-and-export/serverSelection';
 import { CURRENT_APP_VERSION, parseVersionParts } from '@/utils/version';
@@ -41,7 +51,27 @@ import {
   isContractedHoursBoundaryError,
 } from '@/utils/contractedHoursBoundary';
 
-type ServerStatus = 'checking' | 'online' | 'offline';
+type ServerStatus = 'unchecked' | 'checking' | 'online' | 'offline' | 'incompatible' | 'degraded' | 'unauthorized';
+
+type JsonFetchResult =
+  | { kind: 'data'; data: unknown }
+  | { kind: 'http-error'; status: number }
+  | { kind: 'invalid-json' }
+  | { kind: 'unavailable' };
+
+type OptimizationOptionsResult =
+  | { kind: 'options'; options: OptimizationOptionsResponse }
+  | { kind: 'invalid' }
+  | { kind: 'unauthorized' }
+  | { kind: 'unavailable' };
+
+interface ServerInfoProbeResult {
+  status: 'online' | 'incompatible' | 'offline';
+  health: ServerInfoResponse | null;
+  // Missing on backends that predate optional authentication, which are always open.
+  authRequired: boolean;
+  error: string | null;
+}
 
 interface OptimizeJobResponse {
   id: string;
@@ -86,8 +116,101 @@ interface OptimizePhaseEvent {
   message?: string;
 }
 
+interface OptimizeServerEntry {
+  endpoint: string;
+  // `token` is the credential used for this backend, kept out of storage unless remembered.
+  token: string | null;
+  rememberToken: boolean;
+  authRequired: boolean;
+  status: ServerStatus;
+  health: ServerInfoResponse | null;
+  options: OptimizationOptionsResponse | null;
+  error: string | null;
+  lastCheckedAt: Date | null;
+  pingMs: number | null;
+  healthProbeId: number;
+}
+
+interface StoredServerToken {
+  endpoint: string;
+  token: string;
+}
+
 const TERMINAL_JOB_STATES = new Set(['completed', 'cancelled', 'failed']);
 const HEALTH_CHECK_TIMEOUT_MS = 3000;
+const INITIAL_HEALTH_CHECK_TIMEOUT_MS = 3000;
+const SERVER_ACTIVITY_REFRESH_MS = 15000;
+const SERVER_TOKEN_STORAGE_KEY = 'nurse-scheduling-backend-token';
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+// Keep the legacy /optimize request defaults and validation range for backward compatibility with backends that predate /optimize/options.
+const BACKWARD_COMPATIBLE_OPTIMIZATION_OPTIONS: OptimizationOptionsResponse = {
+  schema_version: 'alpha',
+  solver: {
+    default: 'ortools/cp-sat',
+    choices: [
+      {
+        value: 'ortools/cp-sat',
+        label: 'OR-Tools | CP-SAT',
+        compute: 'cpu',
+        timeout: {
+          default: 300,
+          minimum: 1,
+          maximum: 3600,
+        },
+        controls: {
+          cancel_running: true,
+          finish_now: true,
+        },
+      },
+    ],
+  },
+  prettify: {
+    default: true,
+  },
+};
+
+function createServerEntry(
+  server: { endpoint: string; token?: string },
+  status: ServerStatus = 'unchecked',
+): OptimizeServerEntry {
+  const storedToken = typeof server.token === 'string' ? server.token.trim() : '';
+  return {
+    endpoint: server.endpoint,
+    token: isValidBackendToken(storedToken) ? storedToken : null,
+    rememberToken: isValidBackendToken(storedToken),
+    authRequired: false,
+    status,
+    health: null,
+    options: null,
+    error: null,
+    lastCheckedAt: null,
+    pingMs: null,
+    healthProbeId: 0,
+  };
+}
+
+// A remembered token is only reused for the backend it was saved for.
+function loadStoredServerToken(): string | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(SERVER_TOKEN_STORAGE_KEY) ?? 'null') as Partial<StoredServerToken> | null;
+    const token = typeof stored?.token === 'string' ? stored.token.trim() : '';
+    return stored?.endpoint === BACKEND_API_URL && isValidBackendToken(token) ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistServerToken(token: string | null, rememberToken: boolean): void {
+  if (rememberToken && token) {
+    const stored: StoredServerToken = { endpoint: BACKEND_API_URL, token };
+    window.localStorage.setItem(SERVER_TOKEN_STORAGE_KEY, JSON.stringify(stored));
+  } else {
+    window.localStorage.removeItem(SERVER_TOKEN_STORAGE_KEY);
+  }
+}
 
 function isDirtyAppVersion(version: string): boolean {
   return parseVersionParts(version).dirty;
@@ -97,8 +220,23 @@ function hasAppVersionMismatch(frontendVersion: string, backendVersion: string):
   return frontendVersion !== backendVersion || isDirtyAppVersion(frontendVersion) || isDirtyAppVersion(backendVersion);
 }
 
-function normalizeEndpoint(endpoint: string): string {
-  return endpoint.trim().replace(/\/+$/, '');
+function parseClaimedPerformance(value: unknown): ServerInfoResponse['claimed_performance'] {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.score !== 'number' || !Number.isFinite(candidate.score) || candidate.score <= 0 ||
+    typeof candidate.app_version !== 'string' || candidate.app_version.length === 0 ||
+    typeof candidate.measured_at !== 'string' || !Number.isFinite(Date.parse(candidate.measured_at))
+  ) {
+    return null;
+  }
+  return {
+    score: candidate.score,
+    app_version: candidate.app_version,
+    measured_at: candidate.measured_at,
+  };
 }
 
 function buildApiUrl(endpoint: string, path: string): string {
@@ -112,31 +250,153 @@ async function fetchServerInfo(
   endpoint: string,
   timeoutMs = HEALTH_CHECK_TIMEOUT_MS,
   signal?: AbortSignal,
-): Promise<ServerInfoResponse | null> {
+): Promise<ServerInfoProbeResult> {
+  const result = await fetchJsonWithTimeout(`${endpoint}/info`, timeoutMs, signal);
+  if (result.kind === 'http-error') {
+    return {
+      status: 'offline',
+      health: null,
+      authRequired: false,
+      error: `Backend info request failed with status ${result.status}.`,
+    };
+  }
+  if (result.kind === 'unavailable') {
+    return {
+      status: 'offline',
+      health: null,
+      authRequired: false,
+      error: 'Backend is not responding.',
+    };
+  }
+  if (result.kind === 'invalid-json' || !result.data || typeof result.data !== 'object' || Array.isArray(result.data)) {
+    return {
+      status: 'incompatible',
+      health: null,
+      authRequired: false,
+      error: 'Backend returned invalid server information.',
+    };
+  }
+
+  const info = result.data as Partial<ServerInfoResponse>;
+  const incompatibilities: string[] = [];
+  if (info.status !== 'ready') {
+    incompatibilities.push(
+      typeof info.status === 'string'
+        ? `Backend reports status "${info.status}". Expected "ready".`
+        : 'Backend readiness status is missing.'
+    );
+  }
+  if (info.service_name !== EXPECTED_BACKEND_SERVICE_NAME) {
+    incompatibilities.push(
+      typeof info.service_name === 'string'
+        ? `Unexpected service "${info.service_name}". Expected "${EXPECTED_BACKEND_SERVICE_NAME}".`
+        : 'Backend service name is missing.'
+    );
+  }
+  if (info.api_version !== SUPPORTED_BACKEND_API_VERSION) {
+    incompatibilities.push(
+      typeof info.api_version === 'string'
+        ? `Unsupported API version "${info.api_version}". Expected "${SUPPORTED_BACKEND_API_VERSION}".`
+        : 'Backend API version is missing.'
+    );
+  }
+  if (typeof info.app_version !== 'string') {
+    incompatibilities.push('Backend app version is missing.');
+  }
+
+  const auth = parseAuthRequirement(info.auth);
+  const health: ServerInfoResponse = {
+    status: typeof info.status === 'string' ? info.status : 'missing',
+    service_name: typeof info.service_name === 'string' ? info.service_name : 'missing',
+    api_version: typeof info.api_version === 'string' ? info.api_version : 'missing',
+    app_version: typeof info.app_version === 'string' ? info.app_version : 'missing',
+    auth,
+    claimed_performance: parseClaimedPerformance(info.claimed_performance),
+    jobs: info.jobs,
+    workers: info.workers,
+  };
+  const authRequired = auth?.required ?? false;
+  return incompatibilities.length > 0
+    ? {
+        status: 'incompatible',
+        health,
+        authRequired,
+        error: incompatibilities.join(' '),
+      }
+    : {
+        status: 'online',
+        health,
+        authRequired,
+        error: null,
+      };
+}
+
+async function fetchJsonWithTimeout(
+  url: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  headers?: Record<string, string>,
+): Promise<JsonFetchResult> {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   const abortController = () => controller.abort();
-  signal?.addEventListener('abort', abortController);
+  if (signal?.aborted) {
+    controller.abort();
+  } else {
+    signal?.addEventListener('abort', abortController);
+  }
 
   try {
-    const response = await fetch(`${endpoint}/info`, {
+    const response = await fetch(url, {
       method: 'GET',
       cache: 'no-store',
+      headers,
       signal: controller.signal,
     });
-
     if (!response.ok) {
-      return null;
+      return { kind: 'http-error', status: response.status };
     }
 
-    const info = await response.json() as ServerInfoResponse;
-    return info.status === 'ready' ? info : null;
+    try {
+      return { kind: 'data', data: await response.json() as unknown };
+    } catch {
+      return { kind: 'invalid-json' };
+    }
   } catch {
-    return null;
+    return { kind: 'unavailable' };
   } finally {
     window.clearTimeout(timeoutId);
     signal?.removeEventListener('abort', abortController);
   }
+}
+
+async function fetchOptimizationOptions(
+  endpoint: string,
+  token: string | null,
+  timeoutMs = HEALTH_CHECK_TIMEOUT_MS,
+  signal?: AbortSignal,
+): Promise<OptimizationOptionsResult> {
+  const result = await fetchJsonWithTimeout(
+    `${endpoint}/optimize/options`,
+    timeoutMs,
+    signal,
+    buildAuthHeaders(token),
+  );
+  if (result.kind === 'http-error') {
+    if (result.status === 401) {
+      return { kind: 'unauthorized' };
+    }
+    return result.status === 404
+      ? { kind: 'options', options: BACKWARD_COMPATIBLE_OPTIMIZATION_OPTIONS }
+      : { kind: 'unavailable' };
+  }
+  if (result.kind === 'unavailable') {
+    return result;
+  }
+  if (result.kind === 'invalid-json' || !isOptimizationOptionsResponse(result.data)) {
+    return { kind: 'invalid' };
+  }
+  return { kind: 'options', options: result.data };
 }
 
 function getFilenameFromContentDisposition(contentDisposition: string | null): string {
@@ -174,6 +434,15 @@ async function getErrorDetail(response: Response): Promise<string> {
     return errorText;
   }
   return errorText;
+}
+
+const CREDENTIALS_REJECTED_MESSAGE = 'Backend credentials are missing or invalid. Enter the backend token and try again.';
+
+async function getServerErrorMessage(response: Response): Promise<string> {
+  if (response.status === 401) {
+    return CREDENTIALS_REJECTED_MESSAGE;
+  }
+  return `Server error (${response.status}): ${await getErrorDetail(response)}`;
 }
 
 function formatCheckedTime(date: Date | null): string {
@@ -272,6 +541,30 @@ function getEventBadgeClasses(type: string): string {
   return 'bg-gray-100 text-gray-700 ring-gray-200';
 }
 
+function isCredentialRejection(server: OptimizeServerEntry | null): boolean {
+  return server?.status === 'unauthorized' && server.token !== null;
+}
+
+function formatCredentialStatus(rejected: boolean): string {
+  return rejected ? 'Credentials rejected' : 'Credentials required';
+}
+
+function describeCredentialStatus(rejected: boolean): string {
+  return rejected ? 'Select Change to enter the current token.' : 'Select Enter token to continue.';
+}
+
+// Every status detail belongs in the Status icon's hover text. Putting it in the server
+// cell instead lengthens that cell, which widens the table and hides the trailing columns.
+function describeServerStatus(status: ServerStatus, server: OptimizeServerEntry | null): string {
+  const statusText = status === 'unauthorized'
+    ? formatCredentialStatus(isCredentialRejection(server))
+    : formatServerStatus(status);
+  const detail = status === 'unauthorized'
+    ? describeCredentialStatus(isCredentialRejection(server))
+    : server?.error ?? null;
+  return detail ? `${statusText}. ${detail}` : statusText;
+}
+
 function formatServerStatus(status: ServerStatus): string {
   if (status === 'checking') {
     return 'Checking';
@@ -279,7 +572,19 @@ function formatServerStatus(status: ServerStatus): string {
   if (status === 'online') {
     return 'Online';
   }
-  return 'Offline';
+  if (status === 'incompatible') {
+    return 'Incompatible';
+  }
+  if (status === 'offline') {
+    return 'Offline';
+  }
+  if (status === 'degraded') {
+    return 'Options unavailable';
+  }
+  if (status === 'unauthorized') {
+    return 'Credentials required';
+  }
+  return 'Unchecked';
 }
 
 export default function OptimizeAndExportPage() {
@@ -294,10 +599,11 @@ export default function OptimizeAndExportPage() {
     filterAutoGeneratedState
   } = useSchedulingData();
 
-  const [serverStatus, setServerStatus] = useState<ServerStatus>('checking');
-  const [serverHealth, setServerHealth] = useState<ServerInfoResponse | null>(null);
+  const [server, setServer] = useState<OptimizeServerEntry>(() => createServerEntry({ endpoint: BACKEND_API_URL }));
+  const [editingToken, setEditingToken] = useState(false);
   const [prettifyArg, setPrettifyArg] = useState(true);
   const [anonymizeScheduleData, setAnonymizeScheduleData] = useState(true);
+  const [solverArg, setSolverArg] = useState('ortools/cp-sat');
   const [timeoutArg, setTimeoutArg] = useState<number | string>(300);
   const [timeoutError, setTimeoutError] = useState<string | null>(null);
   const [isOptimizing, setIsOptimizing] = useState(false);
@@ -315,8 +621,25 @@ export default function OptimizeAndExportPage() {
   const eventLogRef = useRef<HTMLDivElement | null>(null);
   const savedDownloadUrlRef = useRef<string | null>(null);
   const shouldScrollEventLogToBottomRef = useRef(true);
-
-  const hasVersionMismatch = Boolean(serverHealth && hasAppVersionMismatch(CURRENT_APP_VERSION, serverHealth.app_version));
+  // pageMountId invalidates async work from earlier page visits; healthProbeId
+  // orders repeated probes within the current visit.
+  const pageMountIdRef = useRef(0);
+  const latestHealthProbeIdRef = useRef(0);
+  const serverProbeControllerRef = useRef<AbortController | null>(null);
+  const serverRef = useRef(server);
+  const runOptionsLoadedRef = useRef(false);
+  const resolvedOptimizeEndpoint = BACKEND_API_URL;
+  const activeServerStatus = server.status;
+  const activeServerHealth = server.health;
+  const activeOptimizationOptions = server.options;
+  const selectedSolverChoice = activeOptimizationOptions?.solver.choices.find(
+    choice => choice.value === solverArg
+  ) ?? null;
+  const hasVersionMismatch = Boolean(activeServerHealth && hasAppVersionMismatch(CURRENT_APP_VERSION, activeServerHealth.app_version));
+  const activeClaimedPerformance = activeServerHealth?.claimed_performance ?? null;
+  // The configured backend is an explicit choice, so an incompatible one can still be used.
+  const isIncompatibleServer = activeServerStatus === 'incompatible';
+  const canUseActiveServer = activeServerStatus === 'online' || isIncompatibleServer;
   const isDateDataMissing = !dateData.range?.startDate || !dateData.range?.endDate || dateData.items.length === 0;
   const isPeopleDataMissing = peopleData.items.length === 0;
   const isShiftTypeDataMissing = shiftTypeData.items.length === 0 && shiftTypeData.groups.length === 0;
@@ -328,11 +651,17 @@ export default function OptimizeAndExportPage() {
     !currentJob.terminal
   );
   const isCancelling = scheduleStatus === 'cancelling';
-  const isOptimizeDisabled = isOptimizing || isRequiredDataMissing || serverStatus !== 'online';
+  const isOptimizeDisabled = isOptimizing || isRequiredDataMissing || !canUseActiveServer || !activeOptimizationOptions;
   const optimizeDisabledReason = isRequiredDataMissing
     ? 'Complete the missing schedule configuration before optimizing.'
-    : serverStatus !== 'online'
+    : activeServerStatus === 'unauthorized'
+      ? 'This backend requires credentials. Enter its token to continue.'
+    : activeServerStatus === 'degraded'
+      ? 'Optimization options are unavailable. Check the backend and try again.'
+    : !canUseActiveServer
       ? 'Backend unavailable. Check that the configured backend is running.'
+      : !activeOptimizationOptions
+        ? 'Backend optimization options are unavailable.'
       : null;
 
   // Create the current state object for YAML export (filtering out autogenerated items)
@@ -388,46 +717,172 @@ export default function OptimizeAndExportPage() {
     }
   }, [sseEvents.length]);
 
-  // Health-check the single configured backend URL. Runs once on mount and again
-  // on manual re-check; a new run supersedes (aborts) any in-flight one.
-  const healthCheckControllerRef = useRef<AbortController | null>(null);
-  const healthCheckIdRef = useRef(0);
+  useIsomorphicLayoutEffect(() => {
+    if (!activeOptimizationOptions) {
+      return;
+    }
 
-  const runHealthCheck = useCallback(() => {
-    healthCheckControllerRef.current?.abort();
-    const controller = new AbortController();
-    healthCheckControllerRef.current = controller;
-    const checkId = ++healthCheckIdRef.current;
-
-    setServerStatus('checking');
-    void fetchServerInfo(BACKEND_API_URL, HEALTH_CHECK_TIMEOUT_MS, controller.signal).then(health => {
-      if (checkId !== healthCheckIdRef.current) {
+    const firstLoad = !runOptionsLoadedRef.current;
+    runOptionsLoadedRef.current = true;
+    const solverValues = new Set(activeOptimizationOptions.solver.choices.map(choice => choice.value));
+    if (firstLoad || !solverValues.has(solverArg)) {
+      const defaultSolver = activeOptimizationOptions.solver.default;
+      const defaultChoice = activeOptimizationOptions.solver.choices.find(
+        choice => choice.value === defaultSolver
+      );
+      if (!defaultChoice) {
         return;
       }
-      setServerHealth(health);
-      setServerStatus(health ? 'online' : 'offline');
+      setSolverArg(defaultSolver);
+      setTimeoutArg(defaultChoice.timeout.default);
+      setTimeoutError(null);
+    }
+    if (firstLoad) {
+      setPrettifyArg(activeOptimizationOptions.prettify.default);
+    }
+  }, [activeOptimizationOptions, solverArg]);
+
+  useEffect(() => {
+    serverRef.current = server;
+  }, [server]);
+
+  // Health-check the single configured backend. A new check supersedes (aborts) any in-flight one.
+  const startServerCheck = useCallback((token: string | null, silent = false) => {
+    const endpoint = BACKEND_API_URL;
+    const pageMountId = pageMountIdRef.current;
+    const healthProbeId = latestHealthProbeIdRef.current + 1;
+    latestHealthProbeIdRef.current = healthProbeId;
+    const startedAt = performance.now();
+
+    serverProbeControllerRef.current?.abort();
+    const controller = new AbortController();
+    serverProbeControllerRef.current = controller;
+
+    setServer(currentServer => ({
+      ...currentServer,
+      status: silent && currentServer.status !== 'unchecked' ? currentServer.status : 'checking',
+      error: null,
+      healthProbeId,
+    }));
+
+    void Promise.all([
+      fetchServerInfo(endpoint, INITIAL_HEALTH_CHECK_TIMEOUT_MS, controller.signal),
+      fetchOptimizationOptions(endpoint, token, INITIAL_HEALTH_CHECK_TIMEOUT_MS, controller.signal),
+    ]).then(([result, options]) => {
+      const pingMs = Math.round(performance.now() - startedAt);
+      setServer(currentServer => {
+        if (
+          pageMountId !== pageMountIdRef.current ||
+          currentServer.healthProbeId !== healthProbeId
+        ) {
+          return currentServer;
+        }
+
+        const hasUsableOptions = options.kind === 'options'
+          || (options.kind === 'unavailable' && currentServer.options !== null);
+        const status: ServerStatus = result.status === 'offline'
+          ? 'offline'
+          : result.status === 'incompatible'
+            ? 'incompatible'
+            : options.kind === 'unauthorized'
+              ? 'unauthorized'
+              : hasUsableOptions
+                ? 'online'
+                : 'degraded';
+
+        return {
+          ...currentServer,
+          status,
+          // A rejected token still means the backend requires one, even if `/info` predates
+          // the descriptor.
+          authRequired: result.authRequired || options.kind === 'unauthorized',
+          health: result.health,
+          options: result.status === 'offline'
+            ? null
+            : options.kind === 'options'
+              ? options.options
+              : options.kind === 'unavailable'
+                ? currentServer.options
+                : null,
+          error: result.error
+            ? result.error
+            : options.kind === 'options' || options.kind === 'unauthorized'
+              ? null
+              : options.kind === 'invalid'
+                ? 'Backend returned invalid optimization options.'
+                : 'Optimization options are temporarily unavailable.',
+          lastCheckedAt: new Date(),
+          pingMs,
+        };
+      });
+    }).finally(() => {
+      if (serverProbeControllerRef.current === controller) {
+        serverProbeControllerRef.current = null;
+      }
     });
   }, []);
 
-  useEffect(() => {
-    runHealthCheck();
+  const recheckServer = useCallback(() => {
+    startServerCheck(serverRef.current.token);
+  }, [startServerCheck]);
+
+  useIsomorphicLayoutEffect(() => {
+    pageMountIdRef.current += 1;
+    const pageMountId = pageMountIdRef.current;
+    const storedToken = loadStoredServerToken();
+    setServer(currentServer => ({
+      ...currentServer,
+      token: storedToken,
+      rememberToken: storedToken !== null,
+    }));
+    startServerCheck(storedToken);
+
     return () => {
-      healthCheckControllerRef.current?.abort();
+      serverProbeControllerRef.current?.abort();
+      serverProbeControllerRef.current = null;
+      if (pageMountIdRef.current === pageMountId) {
+        pageMountIdRef.current += 1;
+      }
     };
-  }, [runHealthCheck]);
+  }, [startServerCheck]);
+
+  useEffect(() => {
+    const refreshActivity = () => {
+      if (document.visibilityState !== 'visible') {
+        return;
+      }
+      startServerCheck(serverRef.current.token, true);
+    };
+    const intervalId = window.setInterval(refreshActivity, SERVER_ACTIVITY_REFRESH_MS);
+    document.addEventListener('visibilitychange', refreshActivity);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', refreshActivity);
+    };
+  }, [startServerCheck]);
+
+  const authorizedFetch = useCallback((endpoint: string, path: string, init: RequestInit = {}): Promise<Response> => {
+    return fetch(buildApiUrl(endpoint, path), {
+      ...init,
+      headers: {
+        ...(init.headers as Record<string, string> | undefined),
+        ...buildAuthHeaders(serverRef.current.token),
+      },
+    });
+  }, []);
 
   const getOptimizeJobStatus = useCallback(async (job: OptimizeJobResponse): Promise<OptimizeJobResponse> => {
-    const response = await fetch(buildApiUrl(BACKEND_API_URL, job.links.self), {
+    const response = await authorizedFetch(resolvedOptimizeEndpoint, job.links.self, {
       method: 'GET',
       cache: 'no-store',
     });
 
     if (!response.ok) {
-      throw new Error(`Server error (${response.status}): ${await getErrorDetail(response)}`);
+      throw new Error(await getServerErrorMessage(response));
     }
 
     return await response.json() as OptimizeJobResponse;
-  }, []);
+  }, [authorizedFetch, resolvedOptimizeEndpoint]);
 
   const pollOptimizeJob = useCallback((job: OptimizeJobResponse): Promise<OptimizeJobResponse> => {
     return new Promise((resolve, reject) => {
@@ -459,14 +914,14 @@ export default function OptimizeAndExportPage() {
 
     if (typeof EventSource !== 'undefined') {
       return new Promise((resolve, reject) => {
-        const eventSource = new EventSource(buildApiUrl(BACKEND_API_URL, job.links.events));
-        let finalizationStarted = false;
+        const eventSource = new EventSource(buildApiUrl(resolvedOptimizeEndpoint, job.links.events));
+        let completionStarted = false;
 
         const finalizeJob = () => {
-          if (finalizationStarted) {
+          if (completionStarted) {
             return;
           }
-          finalizationStarted = true;
+          completionStarted = true;
           eventSource.close();
           void getOptimizeJobStatus(job).then(completedJob => {
             setCurrentJob(completedJob);
@@ -520,19 +975,29 @@ export default function OptimizeAndExportPage() {
 
         eventSource.addEventListener('error', (event) => {
           if ('data' in event && typeof event.data === 'string' && event.data) {
+            if (completionStarted) {
+              return;
+            }
+            completionStarted = true;
             eventSource.close();
             const parsedData = parseSseEventData(event as MessageEvent);
             appendSseEvent('error', parsedData);
             reject(new Error('Optimization event stream failed'));
           } else {
-            appendSseEvent('error', 'Optimization event stream disconnected; waiting to reconnect');
+            if (completionStarted) {
+              return;
+            }
+            completionStarted = true;
+            eventSource.close();
+            appendSseEvent('error', 'Optimization event stream disconnected; falling back to polling');
+            void pollOptimizeJob(job).then(resolve).catch(reject);
           }
         });
       });
     }
 
     return pollOptimizeJob(job);
-  }, [appendSseEvent, getOptimizeJobStatus, pollOptimizeJob]);
+  }, [appendSseEvent, getOptimizeJobStatus, pollOptimizeJob, resolvedOptimizeEndpoint]);
 
   const handleOptimizeAndDownload = async () => {
     if (isRequiredDataMissing) {
@@ -549,22 +1014,49 @@ export default function OptimizeAndExportPage() {
       return;
     }
 
-    if (timeoutArg === '' || typeof timeoutArg !== 'number' || !Number.isInteger(timeoutArg) || timeoutArg < 1) {
-      setTimeoutError('Solver timeout must be a valid positive integer.');
-      setErrorMessage(null);
-      return;
-    }
-
-    if (serverStatus !== 'online') {
-      setErrorMessage('Backend is unavailable. Check that the configured backend is running.');
+    if (!activeOptimizationOptions) {
+      setErrorMessage('Backend optimization options are unavailable.');
       setSuccessMessage(null);
       return;
     }
 
+    const solverChoice = activeOptimizationOptions.solver.choices.find(choice => choice.value === solverArg);
+    if (!solverChoice) {
+      setErrorMessage('Select a solver supported by the active backend.');
+      setSuccessMessage(null);
+      return;
+    }
+
+    const timeoutOptions = solverChoice.timeout;
+    if (
+      timeoutArg === '' ||
+      typeof timeoutArg !== 'number' ||
+      !Number.isInteger(timeoutArg) ||
+      timeoutArg < timeoutOptions.minimum ||
+      timeoutArg > timeoutOptions.maximum
+    ) {
+      setTimeoutError(
+        `Solver timeout must be an integer between ${timeoutOptions.minimum} and ${timeoutOptions.maximum} seconds.`
+      );
+      setErrorMessage(null);
+      return;
+    }
+
+    if (!canUseActiveServer || !resolvedOptimizeEndpoint) {
+      setErrorMessage('Backend unavailable. Check that the configured backend is running.');
+      setSuccessMessage(null);
+      return;
+    }
+
+    const runEndpoint = resolvedOptimizeEndpoint;
+    const runSolver = solverArg;
+    const runTimeoutSeconds = timeoutArg;
+    const runAnonymized = anonymizeScheduleData;
+
     let anonymizationResult: ReturnType<typeof anonymizeSchedulingStateWithMapping> | null;
     let yamlContent: string;
     try {
-      anonymizationResult = anonymizeScheduleData
+      anonymizationResult = runAnonymized
         ? anonymizeSchedulingStateWithMapping(filteredState, {
             anonymizePeopleItems: true,
             anonymizePeopleGroups: false,
@@ -574,7 +1066,7 @@ export default function OptimizeAndExportPage() {
       yamlContent = generateYamlFromState(
         anonymizationResult?.state ?? filteredState,
         {
-          contractedHoursBoundary: anonymizeScheduleData
+          contractedHoursBoundary: runAnonymized
             ? 'anonymized-optimize'
             : 'optimize',
         },
@@ -610,21 +1102,26 @@ export default function OptimizeAndExportPage() {
     try {
       // Prepare form data
       const formData = new FormData();
-      formData.append('yaml_content', yamlContent);
+      formData.append(
+        'file',
+        new Blob([yamlContent], { type: 'application/x-yaml' }),
+        'schedule.yaml',
+      );
 
       if (prettifyArg !== null && prettifyArg !== undefined) {
         formData.append('prettify', String(prettifyArg));
       }
 
-      formData.append('timeout', String(timeoutArg));
+      formData.append('timeout', String(runTimeoutSeconds));
+      formData.append('solver', runSolver);
 
-      const createResponse = await fetch(`${normalizeEndpoint(BACKEND_API_URL)}/optimize`, {
+      const createResponse = await authorizedFetch(runEndpoint, '/optimize', {
         method: 'POST',
         body: formData,
       });
 
       if (!createResponse.ok) {
-        throw new Error(`Server error (${createResponse.status}): ${await getErrorDetail(createResponse)}`);
+        throw new Error(await getServerErrorMessage(createResponse));
       }
 
       const createdJob = await createResponse.json() as OptimizeJobResponse;
@@ -650,12 +1147,12 @@ export default function OptimizeAndExportPage() {
         throw new Error(`No downloadable schedule is available. Job outcome: ${completedJob.result?.outcome ?? completedJob.state}`);
       }
 
-      const xlsxResponse = await fetch(buildApiUrl(BACKEND_API_URL, completedJob.links.schedule), {
+      const xlsxResponse = await authorizedFetch(runEndpoint, completedJob.links.schedule, {
         method: 'GET',
       });
 
       if (!xlsxResponse.ok) {
-        throw new Error(`Server error (${xlsxResponse.status}): ${await getErrorDetail(xlsxResponse)}`);
+        throw new Error(await getServerErrorMessage(xlsxResponse));
       }
 
       // Get the blob data (XLSX file)
@@ -674,7 +1171,7 @@ export default function OptimizeAndExportPage() {
       setSavedDownload({ url, filename });
       downloadFileFromUrl(url, filename);
 
-      void fetch(buildApiUrl(BACKEND_API_URL, completedJob.links.self), {
+      void authorizedFetch(runEndpoint, completedJob.links.self, {
         method: 'DELETE',
       }).catch(() => undefined);
 
@@ -700,12 +1197,12 @@ export default function OptimizeAndExportPage() {
       const actionPath = action === 'cancel'
         ? currentJob?.links.cancellation ?? `/optimize/${currentJobId}/cancel`
         : currentJob?.links.early_completion ?? `/optimize/${currentJobId}/finish-now`;
-      const response = await fetch(buildApiUrl(BACKEND_API_URL, actionPath), {
+      const response = await authorizedFetch(resolvedOptimizeEndpoint, actionPath, {
         method: 'POST',
       });
 
       if (!response.ok) {
-        throw new Error(`Server error (${response.status}): ${await getErrorDetail(response)}`);
+        throw new Error(await getServerErrorMessage(response));
       }
 
       const updatedJob = await response.json() as OptimizeJobResponse;
@@ -727,12 +1224,31 @@ export default function OptimizeAndExportPage() {
     downloadFileFromUrl(savedDownload.url, savedDownload.filename);
   };
 
-  const serverStatusClasses = serverStatus === 'online'
+  const applyServerToken = (token: string | null, rememberToken: boolean) => {
+    setServer(currentServer => ({ ...currentServer, token, rememberToken, status: 'unchecked', error: null }));
+    persistServerToken(token, rememberToken);
+    setEditingToken(false);
+    startServerCheck(token);
+  };
+
+  const activeJobs = activeServerHealth?.jobs
+    ? activeServerHealth.jobs.running + activeServerHealth.jobs.cancelling
+    : null;
+  const onlineWorkers = activeServerHealth?.workers?.online ?? null;
+  const showCredentials = server.authRequired || server.token !== null;
+  const serverStatusHoverText = describeServerStatus(activeServerStatus, server);
+  const serverStatusText = activeServerStatus === 'unauthorized'
+    ? formatCredentialStatus(isCredentialRejection(server))
+    : formatServerStatus(activeServerStatus);
+
+  const serverStatusClasses = activeServerStatus === 'online'
     ? 'border-green-200 bg-green-50 text-green-700'
-    : serverStatus === 'offline'
+    : activeServerStatus === 'offline'
       ? 'border-red-200 bg-red-50 text-red-700'
+      : activeServerStatus === 'incompatible' || activeServerStatus === 'degraded' || activeServerStatus === 'unauthorized'
+        ? 'border-amber-200 bg-amber-50 text-amber-700'
       : 'border-gray-200 bg-gray-50 text-gray-600';
-  const serverStatusLabel = formatServerStatus(serverStatus);
+  const serverStatusLabel = formatServerStatus(activeServerStatus);
 
   const runStatus = scheduleStatus
     ? formatRunStatus(scheduleStatus, currentJob?.queue_position)
@@ -751,41 +1267,57 @@ export default function OptimizeAndExportPage() {
     <div className="container mx-auto px-4 py-6 lg:py-8">
       <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">
-          <h1 className="text-3xl font-bold text-gray-900">Optimize and Export</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl font-bold text-gray-900">Optimize and Export</h1>
+            <PageDocumentationLink
+              href={DOCUMENTATION_URLS.optimizeAndExport}
+              label="Optimize and Export"
+            />
+          </div>
           <p className="mt-1 text-sm text-gray-600">
             Send the current schedule configuration to the backend and download the generated XLSX result.
           </p>
         </div>
 
         <div className="flex items-center gap-2">
-          <div className={`inline-flex items-center gap-2.5 rounded-md border px-3 py-2 ${serverStatusClasses}`}>
-            <span className="shrink-0">
-              {serverStatus === 'offline' ? (
-                <FiWifiOff className="h-4 w-4" />
-              ) : serverStatus === 'checking' ? (
-                <FiLoader className="h-4 w-4 animate-spin" />
-              ) : (
-                <FiWifi className="h-4 w-4" />
-              )}
+        <div
+          aria-label={`${resolvedOptimizeEndpoint} status: ${serverStatusText}`}
+          title={serverStatusHoverText}
+          className={`inline-flex items-center gap-2.5 rounded-md border px-3 py-2 ${serverStatusClasses}`}
+        >
+          <span className="shrink-0">
+            {activeServerStatus === 'offline' ? (
+              <FiWifiOff className="h-4 w-4" />
+            ) : activeServerStatus === 'unauthorized' ? (
+              <FiLock className="h-4 w-4" />
+            ) : activeServerStatus === 'degraded' ? (
+              <FiAlertCircle className="h-4 w-4" />
+            ) : activeServerStatus === 'checking' ? (
+              <FiLoader className="h-4 w-4 animate-spin" />
+            ) : activeServerStatus === 'incompatible' ? (
+              <FiAlertTriangle className="h-4 w-4" />
+            ) : (
+              <FiWifi className="h-4 w-4" />
+            )}
+          </span>
+          <span>
+            <span className="block text-sm font-medium">
+              Server: {serverStatusLabel}
             </span>
-            <span>
-              <span className="block text-sm font-medium">
-                Server: {serverStatusLabel}
-              </span>
-              <span className="mt-0.5 block max-w-72 truncate text-xs opacity-75">
-                {BACKEND_API_URL || 'No backend'}
-              </span>
+            <span className="mt-0.5 block max-w-72 truncate text-xs opacity-75">
+              {resolvedOptimizeEndpoint || 'No backend'}
             </span>
-          </div>
+          </span>
+        </div>
           <button
             type="button"
-            onClick={runHealthCheck}
-            disabled={serverStatus === 'checking'}
+            onClick={recheckServer}
+            disabled={isOptimizing}
             className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 py-2 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:opacity-50"
             title="Re-check backend status"
             aria-label="Re-check backend status"
           >
-            <FiRefreshCw className={`h-3.5 w-3.5 ${serverStatus === 'checking' ? 'animate-spin' : ''}`} />
+            <FiRefreshCw className={`h-3.5 w-3.5 ${activeServerStatus === 'checking' ? 'animate-spin' : ''}`} />
             Re-check
           </button>
         </div>
@@ -837,29 +1369,99 @@ export default function OptimizeAndExportPage() {
           </div>
           <div className="space-y-5 p-5">
             <div className="space-y-3">
-              {(serverHealth || serverStatus === 'offline') && (
-                <div className="space-y-2">
-                  {serverHealth && (
-                    <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
-                      <p>
-                        API version: {serverHealth.api_version} · Frontend version: {CURRENT_APP_VERSION} · Backend version: {serverHealth.app_version}
-                      </p>
-                      {hasVersionMismatch && (
-                        <p className="mt-1 font-medium text-amber-700">
-                          Frontend and backend versions do not match. If nothing breaks, you can continue.
-                        </p>
-                      )}
-                    </div>
-                  )}
+              <div className="rounded-md border border-gray-200 px-3 py-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-gray-900">Backend</p>
+                    <p className="mt-0.5 truncate text-xs text-gray-500">
+                      Last checked: {formatCheckedTime(server.lastCheckedAt)}
+                      {server.pingMs !== null ? ` · ${server.pingMs} ms` : ''}
+                    </p>
+                  </div>
+                  <div className="shrink-0 text-right text-sm font-normal">
+                    {activeServerStatus === 'offline' ? (
+                      <span className="text-red-600">Not responding</span>
+                    ) : activeServerStatus === 'checking' && !activeServerHealth ? (
+                      <span className="text-gray-500">Checking...</span>
+                    ) : activeJobs === null || onlineWorkers === null ? (
+                      <span className="text-gray-500">
+                        {activeServerStatus === 'unchecked' ? 'Not checked' : 'Activity unavailable'}
+                      </span>
+                    ) : (
+                      <>
+                        <span className="block text-gray-800">
+                          {activeJobs} active · {activeServerHealth?.jobs?.queued} queued
+                        </span>
+                        <span className="mt-0.5 block text-xs text-gray-500">
+                          {onlineWorkers} {onlineWorkers === 1 ? 'worker' : 'workers'}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+                {showCredentials && (
+                  <div className="mt-2">
+                    <BackendTokenField
+                      endpoint={server.endpoint}
+                      token={server.token}
+                      rememberToken={server.rememberToken}
+                      isEditing={editingToken}
+                      disabled={isOptimizing}
+                      onEdit={() => setEditingToken(true)}
+                      onCancel={() => setEditingToken(false)}
+                      onSave={(token, rememberToken) => applyServerToken(token, rememberToken)}
+                      onClear={() => applyServerToken(null, false)}
+                    />
+                  </div>
+                )}
+              </div>
 
-                  {serverStatus === 'offline' && (
-                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                      <div className="flex gap-2">
-                        <FiAlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-                        <span>Backend is not responding at the configured endpoint.</span>
-                      </div>
-                    </div>
-                  )}
+              {(activeServerHealth || activeServerStatus === 'incompatible') && (
+                <div className="space-y-2">
+                  <div className={`rounded-md border px-3 py-2 text-xs ${activeServerStatus === 'incompatible' ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-gray-200 bg-gray-50 text-gray-600'}`}>
+                    {activeServerHealth && (
+                      <p>
+                        API version: {activeServerHealth.api_version}
+                        {activeServerStatus === 'incompatible' && activeServerHealth.api_version !== SUPPORTED_BACKEND_API_VERSION
+                          ? ` (expected ${SUPPORTED_BACKEND_API_VERSION})`
+                          : ''}
+                        {' · '}Frontend version: {CURRENT_APP_VERSION} · Backend version: {activeServerHealth.app_version}
+                      </p>
+                    )}
+                    {activeClaimedPerformance && (
+                      <p className="mt-1">
+                        Claimed performance: {formatScore(activeClaimedPerformance.score)}
+                      </p>
+                    )}
+                    {activeServerStatus === 'incompatible' ? (
+                        <>
+                          {!activeServerHealth && <p>Server information: invalid</p>}
+                          {activeServerHealth?.service_name !== EXPECTED_BACKEND_SERVICE_NAME && (
+                            <p className="mt-1">
+                              Service: {activeServerHealth?.service_name ?? 'missing'} (expected {EXPECTED_BACKEND_SERVICE_NAME})
+                            </p>
+                          )}
+                          {activeServerHealth?.status !== 'ready' && (
+                            <p className="mt-1">
+                              Status: {activeServerHealth?.status ?? 'missing'} (expected ready)
+                            </p>
+                          )}
+                          <p className="mt-1 font-medium">Incompatible backend. The request may fail.</p>
+                        </>
+                    ) : hasVersionMismatch && (
+                      <p className="mt-1 font-medium text-amber-700">
+                        Frontend and backend versions do not match. If nothing breaks, you can continue.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+              {activeServerStatus === 'degraded' && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  <div className="flex gap-2">
+                    <FiAlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>{server.error ?? 'Optimization options are unavailable.'}</span>
+                  </div>
                 </div>
               )}
             </div>
@@ -875,6 +1477,7 @@ export default function OptimizeAndExportPage() {
                     type="checkbox"
                     checked={prettifyArg}
                     onChange={(e) => setPrettifyArg(e.target.checked)}
+                    disabled={!activeOptimizationOptions}
                     className="mt-1 h-4 w-4 rounded text-blue-600 focus:ring-blue-500"
                   />
                   <span>
@@ -897,25 +1500,71 @@ export default function OptimizeAndExportPage() {
                 </label>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label htmlFor="solver-select" className="block text-sm font-medium text-gray-700 mb-2">
+                    Solver
+                  </label>
+                  <select
+                    id="solver-select"
+                    value={activeOptimizationOptions ? solverArg : ''}
+                    onChange={(event) => {
+                      const nextSolver = event.target.value;
+                      const timeout = activeOptimizationOptions?.solver.choices.find(
+                        choice => choice.value === nextSolver
+                      )?.timeout;
+                      setSolverArg(nextSolver);
+                      setTimeoutError(null);
+                      if (timeout) {
+                        setTimeoutArg(current => (
+                          typeof current === 'number' &&
+                          current >= timeout.minimum &&
+                          current <= timeout.maximum
+                            ? current
+                            : timeout.default
+                        ));
+                      }
+                    }}
+                    disabled={!activeOptimizationOptions}
+                    className="block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm transition-colors focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:bg-gray-100"
+                  >
+                    {!activeOptimizationOptions && <option value="">Waiting for backend options</option>}
+                    {activeOptimizationOptions?.solver.choices.map(choice => (
+                      <option key={choice.value} value={choice.value}>
+                        {choice.label} ({choice.compute.toUpperCase()})
+                      </option>
+                    ))}
+                  </select>
+                  {selectedSolverChoice && (
+                    <p className="mt-2 text-xs text-gray-500">
+                      Running controls: {[
+                        selectedSolverChoice.controls.cancel_running ? 'Cancel' : null,
+                        selectedSolverChoice.controls.finish_now ? 'Finish now' : null,
+                      ].filter(Boolean).join(', ') || 'None'}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label htmlFor="solver-timeout" className="block text-sm font-medium text-gray-700 mb-2">
                     Solver Timeout
                   </label>
                   <div className="flex items-center gap-2">
                     <NumberInput
+                      id="solver-timeout"
                       value={timeoutArg}
                       onChange={(e) => {
                         const value = e.target.value;
                         setTimeoutError(null);
                         setTimeoutArg(value === '' ? '' : (Number.isInteger(Number(value)) ? Number(value) : value));
                       }}
-                      min="1"
-                      max="3600"
+                      min={selectedSolverChoice?.timeout.minimum}
+                      max={selectedSolverChoice?.timeout.maximum}
+                      disabled={!selectedSolverChoice}
                       className={`block w-full rounded-md border bg-white px-3 py-2 text-sm text-gray-900 shadow-sm transition-colors focus:outline-none focus:ring-2 ${
                         timeoutError
                           ? 'border-red-300 focus:border-red-500 focus:ring-red-200'
                           : 'border-gray-300 focus:border-blue-500 focus:ring-blue-200'
                       }`}
-                      placeholder="300"
+                      placeholder={selectedSolverChoice ? String(selectedSolverChoice.timeout.default) : ''}
                     />
                     <span className="text-sm text-gray-500">sec</span>
                   </div>
@@ -947,7 +1596,7 @@ export default function OptimizeAndExportPage() {
                 ) : (
                   <>
                     <FiDownload className="h-5 w-5" />
-                    Optimize and Download
+                    {isIncompatibleServer ? 'Optimize Anyway and Download' : 'Optimize and Download'}
                   </>
                 )}
               </button>
@@ -1063,11 +1712,12 @@ export default function OptimizeAndExportPage() {
             )}
 
             {successMessage && (
-              <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
-                <div className="flex gap-2">
+              <div className="space-y-2">
+                <div className="flex gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
                   <FiCheckCircle className="mt-0.5 h-4 w-4 shrink-0" />
                   <span>{successMessage}</span>
                 </div>
+                <StarRepoNudge />
               </div>
             )}
 

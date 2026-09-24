@@ -3,13 +3,14 @@
 [![tests](https://img.shields.io/github/actions/workflow/status/j3soon/nurse-scheduling/test-core.yaml?label=tests)](https://github.com/j3soon/nurse-scheduling/actions/workflows/test-core.yaml)
 [![Netlify Status](https://api.netlify.com/api/v1/badges/8ec5c5da-89e1-41e5-87b3-133ce1007783/deploy-status)](https://nursescheduling.org/)
 [![codecov](https://codecov.io/github/j3soon/nurse-scheduling/branch/dev/graph/badge.svg)](https://codecov.io/github/j3soon/nurse-scheduling)
-[![docs](https://img.shields.io/badge/docs-pre--release-blue?logo=googledocs)](https://nursescheduling.org/docs/)
+[![docs](https://img.shields.io/badge/docs-online-blue?logo=googledocs)](https://nursescheduling.org/docs/)
 
-A flexible web application designed to streamline and automate nurse scheduling, suitable for a wide range of diverse and complex real-world requirements.
+An automated nurse schedule optimization system designed for diverse and complex real-world requirements.
 
-- Stable version (frontend-only) hosted on [Netlify](https://nursescheduling.org/).
-- Development version hosted on [Netlify](https://dev.nursescheduling.org/).
-- Documentation hosted on [Netlify](https://nursescheduling.org/docs/).
+- Stable version hosted at [nursescheduling.org](https://nursescheduling.org/).
+- Latest development features hosted at [dev.nursescheduling.org](https://dev.nursescheduling.org/).
+- Versioned releases remain available at URLs such as [release-0-2.nursescheduling.org](https://release-0-2.nursescheduling.org/).
+- Documentation hosted at [nursescheduling.org/docs](https://nursescheduling.org/docs/).
 - Source code hosted on [GitHub](https://github.com/j3soon/nurse-scheduling).
 
 ## Introduction
@@ -18,13 +19,35 @@ The nurse scheduling (or employee scheduling) problem is a well-known problem in
 
 However, constraints can differ greatly between hospitals and wards, and there is currently no unified framework for modeling these diverse requirements. Most existing literature focuses on modeling an over-simplified constraint set, which is not applicable to real-world situations. Therefore, in practice, the problem is still often solved by hand with the help of Excel, which is often extremely time-consuming. The entire process requires several hours or even more than ten hours, depending on the problem complexity (e.g., co-scheduling of multiple understaffed wards).
 
-This project (Nurse Scheduling System, or 護理排班系統 in Mandarin) aims to develop a flexible web app to automate the nurse scheduling task, and to provide a unified framework for modeling all types of real-world scenarios without sacrificing flexibility.
+This project (Nurse Scheduling System, or 護理排班系統 in Mandarin) provides a flexible web app and framework for automating schedule optimization across real-world scenarios. It has generated schedules used by real wards with minimal post-adjustment. We keep the main deployment stable, publish the latest features separately, retain versioned releases, and strive to preserve backward compatibility.
 
-> This project is in active development. Breaking changes may occur without notice. Please proceed with caution. Although the current version has been verified by domain experts and used successfully (with minimal post-adjustment) in several complex multi-ward scenarios involving up to ~100 nurses, it currently has a steep learning curve and lacks proper documentation.
+Development builds may introduce breaking changes. Use the stable or versioned deployments when repeatability is important.
+
+## Project Scope
+
+This project focuses on the difficult and time-consuming part of rostering: turning staffing requirements, rules, and individual preferences into a good schedule. A scheduler still needs to define the ward's concrete rules. Infeasible staffing requirements may also require the scheduler to decide what can safely be relaxed. We continue to improve the ease and flexibility of expressing these constraints. Automated re-optimization also makes changed requests less costly and allows more preferences to be considered than a manual process often can.
+
+The system complements rather than replaces a hospital's existing coordination and workforce-management processes. It intentionally does not prescribe user accounts, leave approvals, shift swaps, schedule publication, audit trails, or other self-service and governance workflows. Preferences can come from an existing hospital system, a spreadsheet, or paper and then be entered by the person preparing the schedule. In our on-site discussions, a head nurse or senior ward member typically owned this task, collecting requests was not the main bottleneck, and constructing or revising the schedule could take several hours or more than ten hours. Organizations can retain any required approvals and audit records in their existing systems.
+
+Keeping request coordination separate makes the optimizer hospital-system agnostic and easier to adopt. Hospitals that need direct integration can import data into the scheduling format and export the result to their systems. Please [open an issue](https://github.com/j3soon/nurse-scheduling/issues) to discuss additional import or export requirements.
+
+Two hosted optimization servers are provided as free, shared, best-effort services. The lower-capacity secondary server is available as a fallback. Please use them fairly and do not abuse them. You can also self-host the backend software from this repository.
 
 ## Privacy Notice
 
-This early work-in-progress project provides basic privacy protections, including anonymizing individual people IDs and removing descriptions where possible. The hosted application uses analytics and sends scheduling data to the selected backend when you click **Optimize**. Ad blockers may block analytics, but not optimization submissions. Do not submit sensitive information. See [Privacy and Data Handling](PRIVACY.md) for details.
+The hosted application anonymizes individual people IDs and removes descriptions by default before sending a schedule for optimization. A schedule without direct identifiers may not identify anyone by itself, but dates, groups, and patterns can still be sensitive in context. Use nicknames or non-identifying IDs when in doubt. For greater control, self-host the open-source frontend and backend so your organization can inspect the code and apply its own security and retention policies. See [Privacy and Data Handling](PRIVACY.md) for details.
+
+## AI Beta Access
+
+During the evaluation period, the hosted AI assistant is gated by an API key by default.
+
+To request access for experimentation, email [admin@nursescheduling.org](mailto:admin@nursescheduling.org) from your institution email address. Include your institution's name and a short description of how you plan to evaluate the assistant.
+
+Before requesting or using access, review [Privacy and Data Handling](PRIVACY.md). Do not submit personal, confidential, regulated, or otherwise sensitive information.
+
+## Support
+
+For general questions, [open a GitHub issue](https://github.com/j3soon/nurse-scheduling/issues). For personal questions, email [admin@nursescheduling.org](mailto:admin@nursescheduling.org).
 
 ## How to run
 
@@ -110,6 +133,11 @@ uv pip install -r requirements.txt
 fastapi dev nurse_scheduling\serve.py
 ```
 
+`core/requirements.txt` holds only what the CLI and the backend need at
+runtime, which keeps the deployment image small. Install
+`core/requirements-optional.txt` instead to add the experimental solver
+backends and the test and lint tooling.
+
 ### Linux Development and Docker
 
 The commands below are Linux-focused reference material for setup, testing, and Docker.
@@ -122,80 +150,54 @@ For Linux only: to quickly set up all local environments (`core`, `web-frontend`
 
 For Docker-based development environment:
 
-CPU solver:
+The development images include GitHub CLI. GitHub authentication is optional.
+For read-only GitHub access, create a short-lived
+[fine-grained personal access token](https://github.com/settings/personal-access-tokens/new)
+with access limited to this repository. Grant read-only repository permissions
+for Contents, Pull requests, Issues, and Actions, then export it on the host:
+
+```sh
+export GH_TOKEN=github_pat_your_token
+```
+
+The run commands below pass `GH_TOKEN` into the container when it is set. Do not
+put the token in the image, this repository, or a tracked environment file. Run
+`gh auth status` inside the container to verify access.
+
+CPU image:
 
 ```sh
 # build image
-docker build -f docker/Dockerfile -t j3soon/nurse-scheduling:dev .
+docker build -f docker/Dockerfile.dev -t j3soon/nurse-scheduling:dev .
 ```
 
 Solver development container:
 
 ```sh
-# persist Codex/Claude Code/OpenCode auth/config across containers
+# persist Codex/Claude Code/OpenCode/Pi auth/config across containers
 mkdir -p ~/docker/.codex
 mkdir -p ~/docker/.claude
 touch ~/docker/.claude.json
 mkdir -p ~/docker/opencode/.config/opencode
 mkdir -p ~/docker/opencode/.local/share/opencode
-# mount project files and Codex/Claude Code/OpenCode config
+mkdir -p ~/docker/pi/agent
+# mount project files and Codex/Claude Code/OpenCode/Pi config
 docker run --rm -it --network=host \
+  -e GH_TOKEN \
   -v $(pwd):/app \
   -v ~/docker/.codex:/root/.codex \
   -v ~/docker/.claude:/root/.claude \
   -v ~/docker/.claude.json:/root/.claude.json \
   -v ~/docker/opencode/.config/opencode:/root/.config/opencode \
   -v ~/docker/opencode/.local/share/opencode:/root/.local/share/opencode \
+  -v ~/docker/pi/agent:/root/.pi/agent \
   -v /etc/localtime:/etc/localtime:ro \
   -v /etc/timezone:/etc/timezone:ro \
   j3soon/nurse-scheduling:dev
 ```
 
-GPU solver:
-
-```sh
-# or build image with cuOpt support
-docker build -f docker/Dockerfile.cuopt -t j3soon/nurse-scheduling:dev-cuopt .
-```
-
-The cuOpt image omits `highspy` because the pinned release has no CPython 3.14
-wheel. Use another environment for the `pulp/highs` solver.
-
-```sh
-# persist Codex/Claude Code/OpenCode auth/config across containers
-mkdir -p ~/docker/.codex
-mkdir -p ~/docker/.claude
-touch ~/docker/.claude.json
-mkdir -p ~/docker/opencode/.config/opencode
-mkdir -p ~/docker/opencode/.local/share/opencode
-# mount project files and Codex/Claude Code/OpenCode config
-docker run --rm -it --gpus all --network=host \
-  -v $(pwd):/app \
-  -v ~/docker/.codex:/root/.codex \
-  -v ~/docker/.claude:/root/.claude \
-  -v ~/docker/.claude.json:/root/.claude.json \
-  -v ~/docker/opencode/.config/opencode:/root/.config/opencode \
-  -v ~/docker/opencode/.local/share/opencode:/root/.local/share/opencode \
-  -v /etc/localtime:/etc/localtime:ro \
-  -v /etc/timezone:/etc/timezone:ro \
-  j3soon/nurse-scheduling:dev-cuopt
-```
-
-Inside either development container, start Redis and run the backend in Redis mode:
-
-```sh
-redis-server --daemonize yes
-redis-cli ping
-cd /app/core
-JOB_BACKEND=redis \
-JOB_REDIS_URL=redis://localhost:6379/0 \
-JOB_REDIS_KEY_PREFIX=nurse_scheduling:jobs:v0 \
-uvicorn nurse_scheduling.serve:app --workers 3 --host 0.0.0.0 --port 8000 --no-access-log
-```
-
-Workers renew a 90-second execution lease while optimizing. Set
-`JOB_CLAIM_LEASE_SECONDS` to change how long the server waits before marking a
-job failed after its worker disappears.
+After entering a container, use the [Core](#core) commands to run the CLI or
+the [Web Backend](#web-backend) commands to start a server.
 
 or with X11 forwarding for running Playwright interactive mode in the container:
 
@@ -206,14 +208,17 @@ mkdir -p ~/docker/.claude
 touch ~/docker/.claude.json
 mkdir -p ~/docker/opencode/.config/opencode
 mkdir -p ~/docker/opencode/.local/share/opencode
-# mount project files and Codex/Claude Code/OpenCode config, and forward X11 display
+mkdir -p ~/docker/pi/agent
+# mount project files and Codex/Claude Code/OpenCode/Pi config, and forward X11 display
 docker run --rm -it --network=host \
+  -e GH_TOKEN \
   -v $(pwd):/app \
   -v ~/docker/.codex:/root/.codex \
   -v ~/docker/.claude:/root/.claude \
   -v ~/docker/.claude.json:/root/.claude.json \
   -v ~/docker/opencode/.config/opencode:/root/.config/opencode \
   -v ~/docker/opencode/.local/share/opencode:/root/.local/share/opencode \
+  -v ~/docker/pi/agent:/root/.pi/agent \
   -v /etc/localtime:/etc/localtime:ro \
   -v /etc/timezone:/etc/timezone:ro \
   -e DISPLAY=$DISPLAY \
@@ -258,13 +263,11 @@ bun run test:e2e
 bun run test:e2e:ui
 ```
 
-When using the repository `docker/Dockerfile`, Chromium is preinstalled in the image at
+When using the repository `docker/Dockerfile.dev`, Chromium is preinstalled in the image at
 build time using the frontend's locked Playwright version. If you rebuild the
 image after Playwright version changes, `bun run test:e2e` and
 `bun run test:e2e:ui` should not require rerunning `bunx playwright install chromium`
 inside each new `docker run --rm` container.
-
-> For the interactive UI mode, you may need to run the tests multiple times to get it passed, as the test is currently somewhat flaky. This is due to the delay of page update and is planned to be fixed in the future.
 
 In GitHub Actions, frontend browser integration tests run after frontend unit/coverage tests. The workflow uploads Playwright reports as build artifacts so failed CI runs keep browser traces and reports for debugging.
 
@@ -285,6 +288,11 @@ cd web-frontend
 bun run build
 ```
 
+#### Hosting on Netlify
+
+The root [`netlify.toml`](netlify.toml) builds the static frontend into
+`web-frontend/out` and publishes the documentation under `/docs`.
+
 For linting, run:
 
 ```sh
@@ -294,27 +302,45 @@ bun run lint -- --fix
 
 > `bun` can be replaced directly with `npm` for the basic Next.js workflow, but the documented project scripts assume Bun.
 
+### Experimental AI Chat
+
+The experimental chat answers questions about the schedule currently open in
+the frontend. Arbitrary file attachments are copied into a disposable sandbox
+for inspection. The chat runs as a separate backend process and sends the
+schedule and model-visible inputs to an OpenAI-compatible
+provider.
+
+Create a local configuration file. The real `docker/.env` file is ignored by Git:
+
+```sh
+cp docker/.env.example docker/.env
+# Review and update the AI values. Set AI_AUTH_REQUIRED=false and leave
+# AI_AUTH_TOKEN and AI_AUTH_TOKENS empty only for intentional local no-auth use.
+```
+
+Start the AI backend and frontend in separate terminals:
+
+```sh
+./scripts/start_ai_backend.sh
+./scripts/start_frontend.sh --hostname 0.0.0.0
+```
+
+Open `http://localhost:3000/experimental-ai`, select **Change**, then select
+**Use localhost**. The local AI backend listens on `http://localhost:8001`.
+The page otherwise uses `https://api.nursescheduling.org/ai` by default. See the
+[AI assistant backend guide](https://nursescheduling.org/docs/ai-assistant/)
+for container commands, configuration, security notes, and focused tests.
+
 ### Core
 
-We currently support thirteen solver selectors across OR-Tools and PuLP.
+The main solver paths are:
 
-> All backends other than OR-Tools/CP-SAT are experimental.
+- `ortools/cp-sat`, labeled **OR-Tools | CP-SAT**, is the recommended CPU
+  solver and the default.
 
-- `ortools/cp-sat` is the default solver and the most battle-tested one.
-- `ortools/mpsolver/cbc` uses CBC through the OR-Tools linear MIP API and is covered by the normal schedule regression suite.
-- `ortools/mpsolver/scip` and `ortools/mpsolver/cp-sat` use SCIP and CP-SAT through the OR-Tools linear MIP API and are covered by the normal schedule regression suite.
-- `ortools/mpsolver/bop` uses the legacy BOP engine. It has low-level and bounded schedule smoke coverage, but is not recommended for larger schedules because it can be substantially slower.
-- `ortools/mathopt/gscip`, `ortools/mathopt/cp-sat`, and `ortools/mathopt/highs` use the bundled integer-capable engines through the newer [OR-Tools MathOpt API](https://developers.google.com/optimization/math_opt) and are covered by the normal schedule regression suite.
-- `pulp/cbc` is covered by the normal schedule regression suite and opt-in real-world smoke checks.
-- `pulp/cuopt` is the GPU-accelerated solver. Its real-world smoke check is opt-in and skips when the backend is unavailable.
-- `pulp/glpk` uses the GLPK command-line solver and has low-level and bounded schedule smoke coverage. Install `glpsol` with `apt install glpk-utils`, `brew install glpk`, or `choco install glpk` before selecting it. GLPK can be substantially slower than the other supported backends on larger scheduling models.
-- `pulp/highs` uses the HiGHS Python API and is covered by the normal schedule regression suite. The `highspy` version is pinned to the HiGHS ABI bundled with OR-Tools.
-- `pulp/scip` uses the SCIP Python API and is covered by the normal schedule regression suite.
-
-Running optimization jobs can be cancelled or finished early with `ortools/cp-sat`,
-`ortools/mpsolver/scip`, `ortools/mpsolver/cp-sat`, `ortools/mpsolver/bop`, and
-`ortools/mathopt/cp-sat`. MathOpt/GSCIP, MathOpt/HiGHS, CBC, and PuLP backends do
-not support cooperative interruption in this application.
+See the [solver reference](https://nursescheduling.org/docs/solvers/) for the
+full experimental solver matrix, platform requirements, runtime capabilities,
+and test coverage.
 
 ```sh
 cd core
@@ -322,70 +348,28 @@ cd core
 uv venv --python 3.12
 # activate virtual environment
 source .venv/bin/activate
-# install dependencies
-uv pip install -r requirements.txt
-# run CLI with the OR-Tools/CP-SAT solver
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path]
+# install dependencies, including the optional solvers and test tooling
+uv pip install -r requirements-optional.txt
+# run the CPU solver, OR-Tools | CP-SAT is the default
+python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/cp-sat
 # for example:
 python -m nurse_scheduling.cli tests/testcases/basics/01_1nurse_1shift_1day.yaml
 # run CLI with prettify and verbose
 python -m nurse_scheduling.cli <input_file_path> [output_xlsx_path] --verbose --prettify
 # record solver progress as JSON Lines for later plotting
 python -m nurse_scheduling.cli tests/testcases/real/large-ward-with-87-people-2025-11.yaml --verbose --prettify --timeout 180 --progress-output progress.jsonl
-# run CLI with PuLP/CBC solver (experimental)
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver pulp/cbc
-# run CLI with PuLP/cuOpt solver (experimental) and GPU required
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver pulp/cuopt
-# run PuLP/GLPK (experimental; requires glpsol on PATH)
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver pulp/glpk
-# run non-commercial PuLP Python-API solvers (experimental)
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver pulp/highs
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver pulp/scip
-# explicit OR-Tools/CP-SAT selector
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/cp-sat
-# run an OR-Tools MPSolver backend (experimental)
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/mpsolver/cbc
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/mpsolver/scip
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/mpsolver/cp-sat
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/mpsolver/bop
-# run an OR-Tools MathOpt backend (experimental)
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/mathopt/gscip
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/mathopt/cp-sat
-python -m nurse_scheduling.cli <input_file_path> [output_csv_path] --solver ortools/mathopt/highs
 ```
 
 Run tests:
 
 ```sh
 cd core
-# run low-level solver encoding tests
-pytest --log-cli-level=INFO tests/test_solver_ortools_cp_sat.py
-pytest --log-cli-level=INFO tests/test_solver_ortools_linear.py
-pytest --log-cli-level=INFO tests/test_solver_ortools_mathopt.py
-pytest --log-cli-level=INFO tests/test_solver_pulp_cbc.py
-pytest --log-cli-level=INFO tests/test_solver_pulp_cuopt.py
-pytest --log-cli-level=INFO tests/test_solver_pulp_glpk.py
-pytest --log-cli-level=INFO tests/test_solver_pulp_python.py
-# run schedule regression tests (OR-Tools / PuLP)
-pytest --log-cli-level=INFO tests/test_schedule_ortools_cp_sat.py
-pytest --log-cli-level=INFO \
-  tests/test_schedule_ortools_mpsolver_cbc.py \
-  tests/test_schedule_ortools_mpsolver_scip.py \
-  tests/test_schedule_ortools_mpsolver_cp_sat.py \
-  tests/test_schedule_ortools_mpsolver_bop.py
-pytest --log-cli-level=INFO \
-  tests/test_schedule_ortools_mathopt_gscip.py \
-  tests/test_schedule_ortools_mathopt_cp_sat.py \
-  tests/test_schedule_ortools_mathopt_highs.py
-pytest --log-cli-level=INFO tests/test_schedule_pulp_cbc.py
-pytest --log-cli-level=INFO tests/test_schedule_pulp_cuopt.py
-pytest --log-cli-level=INFO tests/test_schedule_pulp_glpk.py
-pytest --log-cli-level=INFO tests/test_schedule_pulp_highs.py
-pytest --log-cli-level=INFO tests/test_schedule_pulp_scip.py
 # run the normal core test suite
 pytest --log-cli-level=INFO
-# run the slower bounded real-world scenario checks explicitly
-pytest --log-cli-level=INFO tests/real/schedule_ortools_cp_sat.py
+# run focused OR-Tools | CP-SAT tests
+pytest --log-cli-level=INFO \
+  tests/test_solver_ortools_cp_sat.py \
+  tests/test_schedule_ortools_cp_sat.py
 # run Python lint checks for core
 ruff check nurse_scheduling tests
 # auto-fix lint issues when possible
@@ -410,10 +394,8 @@ For more debugging output when a test fails:
 
 ```sh
 cd core
-pytest --log-cli-level=DEBUG tests/test_solver_ortools_cp_sat.py
-pytest --log-cli-level=DEBUG tests/test_solver_pulp_cbc.py
-pytest --log-cli-level=DEBUG tests/test_schedule_ortools_cp_sat.py
-pytest --log-cli-level=DEBUG tests/test_schedule_pulp_cbc.py
+pytest --log-cli-level=INFO tests/test_solver_ortools_cp_sat.py
+pytest --log-cli-level=INFO tests/test_schedule_ortools_cp_sat.py
 ```
 
 Note that setting `WRITE_TO_CSV=True` in `core/tests/schedule_test_helper.py` is often useful for creating new test cases.
@@ -442,11 +424,15 @@ python tests/test_serve.py
 pytest tests/test_serve.py --log-cli-level=INFO
 ```
 
-By default, optimization job state is process-local memory:
+By default, the server exposes only **OR-Tools | CP-SAT** and keeps job state
+in process-local memory:
 
 ```sh
 cd core
-JOB_BACKEND=memory uvicorn nurse_scheduling.serve:app --no-access-log
+JOB_BACKEND=memory \
+OPTIMIZE_SOLVERS=ortools/cp-sat \
+OPTIMIZE_DEFAULT_SOLVER=ortools/cp-sat \
+uvicorn nurse_scheduling.serve:app --no-access-log
 ```
 
 For multiple Uvicorn workers or multiple backend machines, use Redis-backed job state. Redis stores job metadata,
@@ -461,12 +447,46 @@ JOB_REDIS_KEY_PREFIX=nurse_scheduling:jobs:v0 \
 uvicorn nurse_scheduling.serve:app --workers 3 --no-access-log
 ```
 
-The optional `JOB_CLAIM_LEASE_SECONDS` setting defaults to 90 seconds. Keep it
-long enough to tolerate brief Redis interruptions; each active worker renews
-its lease every third of that interval.
+The optional `JOB_WORKER_LEASE_SECONDS` setting defaults to 90 seconds. Keep it
+long enough to tolerate brief Redis interruptions. Every worker renews its
+presence lease every third of that interval, including while idle.
 
-Replayable event history is capped at 1,000 events per job; set
+Replayable event history is capped at 1,000 events per job. Set
 `JOB_MAX_EVENTS_PER_JOB` to choose a different positive limit.
+
+The backend is the source of truth for the optimization controls shown by the
+frontend. `GET /optimize/options` returns the allowed solvers, integer timeout
+range, running-job controls, and prettify default. Configure them with:
+
+```sh
+export OPTIMIZE_SOLVERS=ortools/cp-sat
+export OPTIMIZE_DEFAULT_SOLVER=ortools/cp-sat
+export OPTIMIZE_MIN_TIMEOUT_SECONDS=1
+export OPTIMIZE_DEFAULT_TIMEOUT_SECONDS=300
+export OPTIMIZE_MAX_TIMEOUT_SECONDS=3600
+export OPTIMIZE_DEFAULT_PRETTIFY=true
+```
+
+The server is unauthenticated by default, which suits local development. Set
+the legacy `API_AUTH_TOKEN` or a JSON object such as
+`API_AUTH_TOKENS='{"institution-a":"key"}'` to require a bearer key on every
+application route except `/info` and `/ready`:
+
+```sh
+cd core
+API_AUTH_TOKEN="$(openssl rand -base64 32)" \
+uvicorn nurse_scheduling.serve:app --no-access-log
+```
+
+`GET /info` reports `auth.required` so the frontend can prompt for a key.
+The generated `/openapi.json`, `/docs`, and `/redoc` routes are disabled while
+authentication is configured.
+The images under `docker/` set `API_AUTH_REQUIRED=true`, so a deployed backend
+refuses to start without a configured key. Serving one without authentication
+requires `API_AUTH_REQUIRED=false`.
+
+Only advertise solvers available on that machine. The server validates the
+configured runtimes at startup.
 
 Without Docker, install and start Redis with your operating system package manager.
 
@@ -519,6 +539,9 @@ SCAN 0 MATCH nurse_scheduling:jobs:v0:* COUNT 100
 ZRANGE nurse_scheduling:jobs:v0:jobs 0 -1 WITHSCORES
 ZRANGE nurse_scheduling:jobs:v0:queue 0 -1 WITHSCORES
 SMEMBERS nurse_scheduling:jobs:v0:pending
+ZRANGE nurse_scheduling:jobs:v0:workers:leases 0 -1 WITHSCORES
+HGETALL nurse_scheduling:jobs:v0:workers:tokens
+HGETALL nurse_scheduling:jobs:v0:workers:active
 GET nurse_scheduling:jobs:v0:job:<job-id>
 GET nurse_scheduling:jobs:v0:job:<job-id>:input
 XRANGE nurse_scheduling:jobs:v0:job:<job-id>:events - + COUNT 20
@@ -528,32 +551,6 @@ HGETALL nurse_scheduling:jobs:v0:job:<job-id>:artifact_metadata
 Use `SCAN` instead of `KEYS *` on a busy database. Job artifacts are binary and
 are better inspected through the API download endpoint.
 
-For a graphical browser, run
-[Redis Insight](https://redis.io/docs/latest/operate/redisinsight/install/install-on-docker/)
-on the Compose network:
-
-```sh
-docker run --rm \
-  --name redisinsight \
-  --network nurse-scheduling-backend_default \
-  -p 127.0.0.1:5540:5540 \
-  -v redisinsight:/data \
-  redis/redisinsight:latest
-```
-
-Open `http://localhost:5540` and add a database with `redis://default@redis:6379`. Filter the Browser view with
-`nurse_scheduling:jobs:v0:*`.
-
-When Redis Insight runs on a remote VM, forward its locally bound port before
-opening it in a local browser:
-
-```sh
-ssh -L 5540:127.0.0.1:5540 user@your-server
-```
-
-Keep Redis and Redis Insight off public interfaces. Redis Insight can modify or
-delete stored data.
-
 To run one backend worker with process-local memory and no Redis service, use
 the pre-Redis deployment configuration:
 
@@ -562,36 +559,38 @@ cd docker
 docker compose -f compose.backend.memory.yml up -d --build
 ```
 
-The bundled Redis service uses its default RDB snapshot policy with a persistent
-volume. Enable AOF or use a managed persistence policy when the deployment
-requires a smaller data-loss window after an abrupt Redis or host failure.
+The bundled Redis service persists an AOF with `appendfsync everysec` and keeps
+an RDB fallback after six hours when at least one write has occurred. This
+limits the usual abrupt-failure exposure to approximately the latest second,
+while an RDB-only recovery can be up to six hours behind. Redis installed
+outside the bundled Compose deployment keeps its system persistence policy.
 
 ### Documentation
 
 The commands below are tested on Linux only.
 
 ```sh
-cd docs
 # create virtual environment
-uv venv --python 3.12
+uv venv --python 3.12 docs/.venv
 # activate virtual environment
-source .venv/bin/activate
+source docs/.venv/bin/activate
 # install dependencies
-uv pip install -r requirements.txt
-# preview documentation
-mkdocs serve
+uv pip install -r docs/requirements.txt
+# preview documentation on the port used by local page-help links
+zensical serve
 ```
 
 For building static site, run:
 
 ```sh
-cd docs
-mkdocs build
+zensical build --clean --strict
 ```
 
 ## Acknowledgments
 
 This project would not have been possible without the contributors in [CONTRIBUTORS.md](https://github.com/j3soon/nurse-scheduling/blob/dev/CONTRIBUTORS.md).
+
+See [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md) for the free services this project relies on.
 
 ## License
 

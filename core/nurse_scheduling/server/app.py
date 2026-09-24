@@ -24,14 +24,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from .api.optimize import events_router as optimize_events_router
 from .api.optimize import router as optimize_router
+from .auth import AUTH_SCHEME, create_auth_dependency, create_auth_registry, create_stream_auth_dependency
 from .config import ServerSettings
 from .errors import (
     JobArtifactNotFoundError,
@@ -49,13 +51,14 @@ from .jobs.models import StoreLimits
 from .jobs.runner import OptimizationRunner
 from .jobs.worker import JobWorker
 from .maintenance import JobMaintenance
+from .request_limits import MULTIPART_OVERHEAD_BYTES, MaxBodySizeMiddleware
 from .runtime_identity import get_deployment_id
+from .solver_options import validate_solver_availability
 from .stores.memory import MemoryJobStore
-
 
 TITLE = "Nurse Scheduling API"
 SERVICE_NAME = "nurse-scheduling-api"
-API_VERSION = "alpha"
+API_VERSION = "0.2.0"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 APP_VERSION_FILE = REPO_ROOT / ".app-version"
 UNEXPECTED_ERROR_VERSION_ADVICE = (
@@ -118,6 +121,8 @@ def _create_store(settings: ServerSettings, instance_id: str) -> JobStore:
         key_prefix=settings.redis_key_prefix,
         event_stream_keepalive_seconds=settings.sse_keepalive_seconds,
         max_events_per_job=settings.max_events_per_job,
+        usage_metrics_key_prefix=(settings.usage_metrics_key_prefix if settings.usage_metrics_enabled else None),
+        usage_metrics_retention_days=settings.usage_metrics_retention_days,
     )
 
 
@@ -144,12 +149,28 @@ def create_app(
     Explicit dependencies support isolated tests; omitted values come from configuration.
     """
     settings = settings or ServerSettings.from_env()
+    validate_solver_availability(settings.solver_ids)
     deployment_id = get_deployment_id()
     instance_id = str(uuid4())
     store = store or _create_store(settings, instance_id)
     runner = runner or OptimizationRunner()
     started_at = datetime.now(timezone.utc)
     app_version = get_app_version()
+    claimed_performance = (
+        {
+            "score": settings.claimed_performance.score,
+            "app_version": settings.claimed_performance.app_version,
+            "measured_at": settings.claimed_performance.measured_at.isoformat(),
+        }
+        if settings.claimed_performance is not None
+        else None
+    )
+    # Authentication is advertised publicly so clients can prompt for credentials before
+    # calling a protected route, and so older clients keep working against open deployments.
+    auth_registry = create_auth_registry(settings.auth_token, settings.auth_tokens)
+    require_auth = create_auth_dependency(auth_registry)
+    require_stream_auth = create_stream_auth_dependency(auth_registry)
+    auth_descriptor = {"required": auth_registry.enabled, "scheme": AUTH_SCHEME}
     runtime_identity = {
         "service_name": SERVICE_NAME,
         "api_version": API_VERSION,
@@ -167,7 +188,7 @@ def create_app(
             max_retained=settings.max_retained_jobs,
         ),
         retention_seconds=settings.job_retention_seconds,
-        claim_lease_seconds=settings.claim_lease_seconds,
+        worker_lease_seconds=settings.worker_lease_seconds,
         runtime_identity=runtime_identity,
     )
     worker = JobWorker(
@@ -175,7 +196,7 @@ def create_app(
         runner,
         worker_id=instance_id,
         claim_poll_seconds=settings.claim_poll_seconds,
-        claim_lease_seconds=settings.claim_lease_seconds,
+        worker_lease_seconds=settings.worker_lease_seconds,
         timeout_grace_seconds=settings.timeout_grace_seconds,
         unexpected_error_formatter=_format_unexpected_error,
     )
@@ -186,7 +207,7 @@ def create_app(
         """Own startup and shutdown of process-local background threads."""
         server_logger.info(
             "[server:start] title=%s api_version=%s app_version=%s deployment_id=%s "
-            "instance_id=%s backend=%s job_store_id=%s",
+            "instance_id=%s backend=%s job_store_id=%s auth=%s",
             TITLE,
             API_VERSION,
             app_version,
@@ -194,6 +215,7 @@ def create_app(
             instance_id,
             settings.job_backend,
             store.store_id,
+            AUTH_SCHEME if auth_registry.enabled else "disabled",
         )
         if start_background:
             worker.start()
@@ -205,8 +227,17 @@ def create_app(
                 maintenance.stop()
                 worker.stop()
 
-    app = FastAPI(title=TITLE, version=API_VERSION, lifespan=lifespan)
+    generated_docs_are_public = not auth_registry.enabled
+    app = FastAPI(
+        title=TITLE,
+        version=API_VERSION,
+        lifespan=lifespan,
+        openapi_url="/openapi.json" if generated_docs_are_public else None,
+        docs_url="/docs" if generated_docs_are_public else None,
+        redoc_url="/redoc" if generated_docs_are_public else None,
+    )
     app.state.settings = settings
+    app.state.auth_registry = auth_registry
     app.state.job_store = store
     app.state.job_controller = controller
     app.state.job_runner = runner
@@ -256,6 +287,12 @@ def create_app(
             exc = StarletteHTTPException(status_code=413, detail="Scheduling YAML is too large")
         return await http_exception_handler(request, exc)
 
+    # Added before CORS so the CORS layer stays outermost and still decorates a
+    # rejected oversize request.
+    app.add_middleware(
+        MaxBodySizeMiddleware,
+        max_bytes=settings.max_yaml_bytes + MULTIPART_OVERHEAD_BYTES,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=ORIGIN_REGEX,
@@ -264,29 +301,35 @@ def create_app(
         allow_credentials=True,
         expose_headers=["Content-Disposition", "Location", "Retry-After"],
     )
-    app.include_router(optimize_router)
+    app.include_router(optimize_router, dependencies=[Depends(require_auth)])
+    app.include_router(optimize_events_router, dependencies=[Depends(require_stream_auth)])
 
-    @app.get("/")
+    @app.get("/", dependencies=[Depends(require_auth)])
     async def root() -> dict[str, str]:
         """Return API identity and backend build version."""
         return {"message": TITLE, "api_version": API_VERSION, "app_version": app_version}
 
     def info_payload(status: str):
         """Build public service identity and job-store metadata."""
-        return {"status": status, **runtime_identity}
+        return {
+            "status": status,
+            **runtime_identity,
+            "auth": auth_descriptor,
+            "claimed_performance": claimed_performance,
+        }
 
     def check_readiness() -> str | None:
         """Return the first unavailable dependency reason, or `None` when ready."""
         try:
             store.check_health()
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             server_logger.warning(
                 "[server:readiness] job store unavailable backend=%s error=%s",
                 settings.job_backend,
                 error,
             )
             return "job_store_unavailable"
-        if start_background and not worker.is_alive():
+        if start_background and not worker.is_ready():
             return "job_worker_unavailable"
         return None
 
@@ -300,8 +343,29 @@ def create_app(
                 content={**info_payload("unavailable"), "reason": unavailable_reason},
                 headers={"Cache-Control": "no-store"},
             )
+        try:
+            activity = controller.get_activity()
+        except Exception as error:  # noqa: BLE001
+            server_logger.warning(
+                "[server:info] job activity unavailable backend=%s error=%s",
+                settings.job_backend,
+                error,
+            )
+            return JSONResponse(
+                status_code=503,
+                content={**info_payload("unavailable"), "reason": "job_store_unavailable"},
+                headers={"Cache-Control": "no-store"},
+            )
         return JSONResponse(
-            content=info_payload("ready"),
+            content={
+                **info_payload("ready"),
+                "jobs": {
+                    "running": activity.running_jobs,
+                    "queued": activity.queued_jobs,
+                    "cancelling": activity.cancelling_jobs,
+                },
+                "workers": {"online": activity.online_workers},
+            },
             headers={"Cache-Control": "no-store"},
         )
 

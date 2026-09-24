@@ -24,6 +24,13 @@ import userEvent from '@testing-library/user-event';
 import { act } from 'react';
 import OptimizeAndExportPage from '@/app/optimize-and-export/page';
 import {
+  buildAuthHeaders,
+  isOptimizationOptionsResponse,
+  normalizeEndpoint,
+  parseAuthRequirement,
+  type ServerInfoResponse,
+} from '@/app/optimize-and-export/serverSelection';
+import {
   ContractedHoursBoundaryError,
   ContractedHoursDiagnostic,
 } from '@/utils/contractedHoursBoundary';
@@ -55,9 +62,7 @@ vi.mock('@/utils/version', () => ({
   }),
 }));
 
-// The backend URL is resolved from NEXT_PUBLIC_BACKEND_API_URL at build time; it
-// is unset under test so the app falls back to the local default.
-const BACKEND_API_URL = 'http://localhost:8000';
+const LOCAL_API_URL = 'http://localhost:8000';
 
 class MockEventSource {
   static instances: MockEventSource[] = [];
@@ -99,26 +104,60 @@ const createSchedulingData = (overrides = {}) => ({
   ...overrides,
 });
 
-const healthyResponse = (overrides: Partial<{
-  status: string;
-  api_version: string;
-  app_version: string;
-}> = {}) => ({
+const healthyResponse = (overrides: Partial<ServerInfoResponse> = {}) => ({
   ok: true,
   json: vi.fn().mockResolvedValue({
     status: 'ready',
-    api_version: 'alpha',
+    service_name: 'nurse-scheduling-api',
+    api_version: '0.2.0',
     app_version: 'frontend-test',
+    jobs: { running: 0, queued: 0, cancelling: 0 },
+    workers: { online: 1 },
     ...overrides,
   }),
 });
 
-// Queue the mount-time health check so the backend resolves online, then let the
-// caller chain the optimize/download responses that follow.
+const optimizationOptionsResponse = (overrides: {
+  defaultSolver?: string;
+  solverChoices?: Array<{
+    value: string;
+    label: string;
+    compute: 'cpu' | 'gpu';
+    timeout: { default: number; minimum: number; maximum: number };
+    controls: { cancel_running: boolean; finish_now: boolean };
+  }>;
+  prettifyDefault?: boolean;
+} = {}) => ({
+  ok: true,
+  json: vi.fn().mockResolvedValue({
+    schema_version: 'alpha',
+    solver: {
+      default: overrides.defaultSolver ?? 'ortools/cp-sat',
+      choices: overrides.solverChoices ?? [{
+        value: 'ortools/cp-sat',
+        label: 'OR-Tools | CP-SAT',
+        compute: 'cpu',
+        timeout: { default: 300, minimum: 1, maximum: 3600 },
+        controls: { cancel_running: true, finish_now: true },
+      }],
+    },
+    prettify: { default: overrides.prettifyDefault ?? true },
+  }),
+});
+
 const queueInitialLocalSelection = (fetchMock: ReturnType<typeof vi.fn>) => {
-  fetchMock.mockResolvedValueOnce(healthyResponse());
+  fetchMock.mockResolvedValueOnce(healthyResponse()).mockResolvedValueOnce(optimizationOptionsResponse());
   return fetchMock;
 };
+
+const respondWithHealthyBackend = (
+  url: string,
+  healthOverrides: Partial<ServerInfoResponse> = {},
+) => Promise.resolve(
+  url.endsWith('/optimize/options')
+    ? optimizationOptionsResponse()
+    : healthyResponse(healthOverrides)
+);
 
 const contractedHoursDiagnostic = (
   boundary: ContractedHoursDiagnostic['boundary'],
@@ -182,6 +221,106 @@ const optimizeJobResponse = ({
   };
 };
 
+describe('backend authentication discovery', () => {
+  it('treats a backend without an auth descriptor as open', () => {
+    expect(parseAuthRequirement(undefined)).toBeNull();
+    expect(parseAuthRequirement(null)).toBeNull();
+    expect(parseAuthRequirement('bearer')).toBeNull();
+    expect(parseAuthRequirement([])).toBeNull();
+    expect(parseAuthRequirement({ scheme: 'bearer' })).toBeNull();
+  });
+
+  it('reads the advertised requirement and scheme', () => {
+    expect(parseAuthRequirement({ required: true, scheme: 'Bearer' })).toEqual({
+      required: true,
+      scheme: 'bearer',
+    });
+    expect(parseAuthRequirement({ required: false, scheme: 'bearer' })).toEqual({
+      required: false,
+      scheme: 'bearer',
+    });
+    expect(parseAuthRequirement({ required: true })).toEqual({ required: true, scheme: 'bearer' });
+  });
+
+  it('sends an Authorization header only when a token is set', () => {
+    expect(buildAuthHeaders('secret')).toEqual({ Authorization: 'Bearer secret' });
+    expect(buildAuthHeaders(null)).toEqual({});
+  });
+});
+
+describe('backend endpoint normalization', () => {
+  it.each([
+    ['api.nursescheduling.org', 'https://api.nursescheduling.org'],
+    ['api.nursescheduling.org/', 'https://api.nursescheduling.org'],
+    ['api.nursescheduling.org///', 'https://api.nursescheduling.org'],
+    ['  api.nursescheduling.org  ', 'https://api.nursescheduling.org'],
+    ['//api.nursescheduling.org', 'https://api.nursescheduling.org'],
+    ['backend.example.test:8443', 'https://backend.example.test:8443'],
+  ])('defaults a bare host to https: %s', (input, expected) => {
+    expect(normalizeEndpoint(input)).toBe(expected);
+  });
+
+  it.each([
+    ['localhost:8000', 'http://localhost:8000'],
+    ['localhost', 'http://localhost'],
+    ['127.0.0.1:8000', 'http://127.0.0.1:8000'],
+    ['LOCALHOST:8000', 'http://LOCALHOST:8000'],
+  ])('defaults a loopback host to http: %s', (input, expected) => {
+    expect(normalizeEndpoint(input)).toBe(expected);
+  });
+
+  it.each([
+    ['http://localhost:8000', 'http://localhost:8000'],
+    ['https://api.nursescheduling.org', 'https://api.nursescheduling.org'],
+    ['http://api.nursescheduling.org', 'http://api.nursescheduling.org'],
+    ['HTTPS://api.nursescheduling.org', 'HTTPS://api.nursescheduling.org'],
+    ['https://api.nursescheduling.org/', 'https://api.nursescheduling.org'],
+  ])('keeps an explicit scheme as typed: %s', (input, expected) => {
+    expect(normalizeEndpoint(input)).toBe(expected);
+  });
+
+  it('leaves an empty value empty', () => {
+    expect(normalizeEndpoint('')).toBe('');
+    expect(normalizeEndpoint('   ')).toBe('');
+  });
+});
+
+describe('optimize backend options', () => {
+  it('validates optimization option metadata', () => {
+    const valid = {
+      schema_version: 'alpha',
+      solver: {
+        default: 'ortools/cp-sat',
+        choices: [{
+          value: 'ortools/cp-sat',
+          label: 'OR-Tools | CP-SAT',
+          compute: 'cpu',
+          timeout: { default: 300, minimum: 1, maximum: 3600 },
+          controls: { cancel_running: true, finish_now: true },
+        }],
+      },
+      prettify: { default: true },
+    };
+    expect(isOptimizationOptionsResponse(valid)).toBe(true);
+
+    const choice = valid.solver.choices[0];
+    const invalid = [
+      { ...valid, solver: { ...valid.solver, default: 'missing' } },
+      { ...valid, solver: { ...valid.solver, choices: [choice, choice] } },
+      {
+        ...valid,
+        solver: { ...valid.solver, choices: [{ ...choice, timeout: { default: 0, minimum: 1, maximum: 10 } }] },
+      },
+      {
+        ...valid,
+        solver: { ...valid.solver, choices: [{ ...choice, controls: { ...choice.controls, finish_now: 'yes' } }] },
+      },
+    ];
+    invalid.forEach(candidate => expect(isOptimizationOptionsResponse(candidate)).toBe(false));
+  });
+
+});
+
 describe('OptimizeAndExportPage error handling', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -195,6 +334,7 @@ describe('OptimizeAndExportPage error handling', () => {
     vi.stubGlobal('EventSource', undefined);
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock');
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    window.localStorage.removeItem('nurse-scheduling-backend-token');
   });
 
   it('surfaces raw non-JSON error bodies from the backend', async () => {
@@ -273,21 +413,246 @@ describe('OptimizeAndExportPage error handling', () => {
     expect(screen.queryByText(/check that your frontend and backend versions match/i)).not.toBeInTheDocument();
   });
 
-  it('shows backend readiness and version status from the configured info endpoint', async () => {
-    (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue({
-        status: 'ready',
-        api_version: 'alpha',
+  it('shows backend readiness and version status from the info endpoint', async () => {
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockImplementation((url: string) => respondWithHealthyBackend(
+      url,
+      {
         app_version: 'v-test',
-      }),
+        jobs: { running: 2, queued: 4, cancelling: 1 },
+        workers: { online: 5 },
+      },
+    ));
+
+    render(<OptimizeAndExportPage />);
+
+    await expect(screen.findByText('Server: Online')).resolves.toBeInTheDocument();
+    expect(screen.getByText(/API version: 0\.2\.0 · Frontend version: frontend-test · Backend version: v-test/)).toBeInTheDocument();
+    expect(screen.getByText(/Last checked: .* · \d+ ms/)).toBeInTheDocument();
+    expect(screen.getByText('3 active · 4 queued')).toBeInTheDocument();
+    expect(screen.getByText('5 workers')).toBeInTheDocument();
+  });
+
+  it('shows unavailable activity for an older healthy backend response', async () => {
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockImplementation((url: string) => respondWithHealthyBackend(
+      url,
+      { jobs: undefined, workers: undefined },
+    ));
+
+    render(<OptimizeAndExportPage />);
+
+    await expect(screen.findByText('Server: Online')).resolves.toBeInTheDocument();
+    expect(screen.getByText('Activity unavailable')).toBeInTheDocument();
+  });
+
+  it('uses backward-compatible defaults when a healthy backend has no optimization options endpoint', async () => {
+    const user = userEvent.setup();
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith('/optimize/options')) {
+        return Promise.resolve({ ok: false, status: 404 });
+      }
+      if (url.endsWith('/optimize')) {
+        return Promise.resolve({
+          ok: false,
+          status: 422,
+          text: vi.fn().mockResolvedValue('legacy request reached backend'),
+        });
+      }
+      return Promise.resolve(healthyResponse());
     });
 
     render(<OptimizeAndExportPage />);
 
     await expect(screen.findByText('Server: Online')).resolves.toBeInTheDocument();
-    expect(screen.getByText(/API version: alpha · Frontend version: frontend-test · Backend version: v-test/)).toBeInTheDocument();
-    expect(fetch).toHaveBeenCalledWith(`${BACKEND_API_URL}/info`, expect.objectContaining({ method: 'GET' }));
+    expect(screen.queryByText(/backend is too old/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /solver/i })).toHaveValue('ortools/cp-sat');
+    expect(screen.getByRole('spinbutton', { name: /solver timeout/i })).toHaveValue(300);
+    expect(screen.getByRole('spinbutton', { name: /solver timeout/i })).toHaveAttribute('min', '1');
+    expect(screen.getByRole('spinbutton', { name: /solver timeout/i })).toHaveAttribute('max', '3600');
+    expect(screen.getByRole('checkbox', { name: /prettify xlsx/i })).toBeChecked();
+
+    await user.click(screen.getByRole('button', { name: /optimize and download/i }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      `${LOCAL_API_URL}/optimize`,
+      expect.objectContaining({ method: 'POST' })
+    ));
+    const optimizeRequest = fetchMock.mock.calls.find(([url]) => url === `${LOCAL_API_URL}/optimize`);
+    const requestBody = optimizeRequest?.[1]?.body as FormData;
+    expect(requestBody.get('solver')).toBe('ortools/cp-sat');
+    expect(requestBody.get('timeout')).toBe('300');
+    expect(requestBody.get('prettify')).toBe('true');
+  });
+
+  it('preserves existing options when an options refresh temporarily fails', async () => {
+    const user = userEvent.setup();
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    let optionsUnavailable = false;
+    fetchMock.mockImplementation((url: string) => Promise.resolve(
+      url.endsWith('/optimize/options')
+        ? optionsUnavailable
+          ? { ok: false, status: 503 }
+          : optimizationOptionsResponse()
+        : healthyResponse()
+    ));
+
+    render(<OptimizeAndExportPage />);
+    await screen.findByText('Server: Online');
+
+    optionsUnavailable = true;
+    await user.click(screen.getByRole('button', { name: /check backend/i }));
+
+    await waitFor(() => expect(screen.getByLabelText(`${LOCAL_API_URL} status: Online`)).toHaveAttribute(
+      'title',
+      'Online. Optimization options are temporarily unavailable.'
+    ));
+    expect(screen.queryByText(/optimization options are temporarily unavailable/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Server: Online')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /solver/i })).toHaveValue('ortools/cp-sat');
+    expect(screen.getByRole('button', { name: /optimize and download/i })).toBeEnabled();
+  });
+
+  it('keeps invalid optimization options unavailable', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation((url: string) => Promise.resolve(
+      url.endsWith('/optimize/options')
+        ? { ok: true, json: vi.fn().mockResolvedValue({ schema_version: 'invalid' }) }
+        : healthyResponse()
+    ));
+
+    render(<OptimizeAndExportPage />);
+
+    await expect(screen.findByText('Server: Options unavailable')).resolves.toBeInTheDocument();
+    expect(screen.getByLabelText(`${LOCAL_API_URL} status: Options unavailable`)).toHaveAttribute(
+      'title',
+      'Options unavailable. Backend returned invalid optimization options.'
+    );
+    expect(screen.getByText('Backend returned invalid optimization options.')).toBeInTheDocument();
+    expect(screen.queryByText('Server: Incompatible')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /optimize and download/i })).toBeDisabled();
+  });
+
+  it('uses backend-defined solver, timeout, and prettify options', async () => {
+    const user = userEvent.setup();
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith('/info')) {
+        return Promise.resolve(healthyResponse());
+      }
+      if (url.endsWith('/optimize/options')) {
+        return Promise.resolve(optimizationOptionsResponse({
+        defaultSolver: 'pulp/highs',
+        solverChoices: [
+          {
+            value: 'ortools/cp-sat',
+            label: 'OR-Tools | CP-SAT',
+            compute: 'cpu',
+            timeout: { default: 120, minimum: 10, maximum: 900 },
+            controls: { cancel_running: true, finish_now: true },
+          },
+          {
+            value: 'pulp/highs',
+            label: 'PuLP | HiGHS',
+            compute: 'cpu',
+            timeout: { default: 120, minimum: 10, maximum: 900 },
+            controls: { cancel_running: true, finish_now: false },
+          },
+        ],
+        prettifyDefault: false,
+        }));
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 503,
+        text: vi.fn().mockResolvedValue('temporary failure'),
+      });
+    });
+
+    render(<OptimizeAndExportPage />);
+    await screen.findByText('Server: Online');
+
+    const solverSelect = screen.getByRole('combobox', { name: /solver/i });
+    const timeoutInput = screen.getByRole('spinbutton', { name: /solver timeout/i });
+    expect(solverSelect).toHaveValue('pulp/highs');
+    expect(Array.from((solverSelect as HTMLSelectElement).options).map(option => option.text)).toEqual([
+      'OR-Tools | CP-SAT (CPU)',
+      'PuLP | HiGHS (CPU)',
+    ]);
+    expect(timeoutInput).toHaveValue(120);
+    expect(timeoutInput).toHaveAttribute('min', '10');
+    expect(timeoutInput).toHaveAttribute('max', '900');
+    expect(screen.getByRole('checkbox', { name: /prettify xlsx/i })).not.toBeChecked();
+    expect(screen.getByText(/running controls:\s*cancel/i)).toBeInTheDocument();
+
+    await user.clear(timeoutInput);
+    await user.type(timeoutInput, '901');
+    await user.click(screen.getByRole('button', { name: /optimize and download/i }));
+    expect(screen.getByText('Solver timeout must be an integer between 10 and 900 seconds.')).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await user.clear(timeoutInput);
+    await user.type(timeoutInput, '200');
+    await user.selectOptions(solverSelect, 'ortools/cp-sat');
+    expect(screen.getByText(/running controls:\s*cancel, finish now/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /optimize and download/i }));
+    await screen.findByText('Server error (503): temporary failure');
+
+    const createCall = fetchMock.mock.calls.find(
+      ([url, options]) => url === `${LOCAL_API_URL}/optimize` && options?.method === 'POST'
+    );
+    const formData = createCall?.[1].body as FormData;
+    expect(formData.get('solver')).toBe('ortools/cp-sat');
+    expect(formData.get('timeout')).toBe('200');
+    expect(formData.get('prettify')).toBe('false');
+  });
+
+  it('silently refreshes activity while preserving the previous online snapshot', async () => {
+    const user = userEvent.setup();
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    let resolveRefresh: (response: ReturnType<typeof healthyResponse>) => void = () => undefined;
+    let healthRequestCount = 0;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith('/optimize/options')) {
+        return Promise.resolve(optimizationOptionsResponse());
+      }
+      if (healthRequestCount === 0) {
+        healthRequestCount += 1;
+        return Promise.resolve(healthyResponse({
+          jobs: { running: 1, queued: 2, cancelling: 0 },
+          workers: { online: 3 },
+        }));
+      }
+      return new Promise(resolve => {
+        resolveRefresh = resolve;
+      });
+    });
+    const setIntervalSpy = vi.spyOn(window, 'setInterval');
+
+    render(<OptimizeAndExportPage />);
+
+    await expect(screen.findByText('Server: Online')).resolves.toBeInTheDocument();
+    expect(screen.getByText('1 active · 2 queued')).toBeInTheDocument();
+    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 15000);
+    const timeoutInput = screen.getByRole('spinbutton', { name: /solver timeout/i });
+    await user.clear(timeoutInput);
+
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(screen.getByText('Server: Online')).toBeInTheDocument();
+    expect(screen.getByText('1 active · 2 queued')).toBeInTheDocument();
+
+    act(() => {
+      resolveRefresh(healthyResponse({
+        jobs: { running: 2, queued: 1, cancelling: 1 },
+        workers: { online: 4 },
+      }));
+    });
+    await waitFor(() => {
+      expect(screen.getByText('3 active · 1 queued')).toBeInTheDocument();
+      expect(screen.getByText('4 workers')).toBeInTheDocument();
+      expect(timeoutInput).toHaveValue(null);
+    });
   });
 
   it('allows an empty solver timeout while editing and clears its run error only after a value change', async () => {
@@ -302,30 +667,98 @@ describe('OptimizeAndExportPage error handling', () => {
     await user.clear(timeoutInput);
     await user.click(screen.getByRole('button', { name: /optimize and download/i }));
 
-    expect(screen.getByText('Solver timeout must be a valid positive integer.')).toBeInTheDocument();
+    expect(screen.getByText('Solver timeout must be an integer between 1 and 3600 seconds.')).toBeInTheDocument();
     expect(timeoutInput).toHaveClass('border-red-300');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
 
     await user.type(timeoutInput, 'abc');
 
-    expect(screen.getByText('Solver timeout must be a valid positive integer.')).toBeInTheDocument();
+    expect(screen.getByText('Solver timeout must be an integer between 1 and 3600 seconds.')).toBeInTheDocument();
     expect(timeoutInput).toHaveClass('border-red-300');
 
     await user.type(timeoutInput, '45');
 
-    expect(screen.queryByText('Solver timeout must be a valid positive integer.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Solver timeout must be an integer between 1 and 3600 seconds.')).not.toBeInTheDocument();
     expect(timeoutInput).not.toHaveClass('border-red-300');
   });
 
-  it('warns when frontend and backend versions differ', async () => {
-    (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue({
-        status: 'ready',
-        api_version: 'alpha',
-        app_version: 'backend-test',
-      }),
+  it('keeps the previous backend version visible while a health check is pending and clears it when offline', async () => {
+    const user = userEvent.setup();
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    queueInitialLocalSelection(fetchMock);
+
+    render(<OptimizeAndExportPage />);
+
+    await expect(screen.findByText('Server: Online')).resolves.toBeInTheDocument();
+    const versionDetails = /API version: 0\.2\.0 · Frontend version: frontend-test · Backend version: frontend-test/;
+    expect(screen.getByText(versionDetails)).toBeInTheDocument();
+
+    let resolveHealthCheck: (response: { ok: boolean }) => void = () => undefined;
+    fetchMock.mockImplementationOnce(() => new Promise(resolve => {
+      resolveHealthCheck = resolve;
+    }));
+    await user.click(screen.getByRole('button', { name: /check backend/i }));
+
+    expect(screen.getByText('Server: Checking')).toBeInTheDocument();
+    expect(screen.getByText(versionDetails)).toBeInTheDocument();
+
+    act(() => {
+      resolveHealthCheck({ ok: false });
     });
+
+    await expect(screen.findByText('Server: Offline')).resolves.toBeInTheDocument();
+    expect(screen.queryByText(versionDetails)).not.toBeInTheDocument();
+  });
+
+  it('ignores an older failed health check after a newer check succeeds', async () => {
+    const user = userEvent.setup();
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    queueInitialLocalSelection(fetchMock);
+
+    render(<OptimizeAndExportPage />);
+
+    await expect(screen.findByText('Server: Online')).resolves.toBeInTheDocument();
+
+    let resolveOlderHealthCheck: (response: { ok: boolean }) => void = () => undefined;
+    fetchMock
+      .mockImplementationOnce(() => new Promise(resolve => {
+        resolveOlderHealthCheck = resolve;
+      }))
+      .mockResolvedValueOnce(optimizationOptionsResponse())
+      .mockResolvedValueOnce(healthyResponse())
+      .mockResolvedValueOnce(optimizationOptionsResponse());
+
+    await user.click(screen.getByRole('button', { name: /check backend/i }));
+    expect(screen.getByText('Server: Checking')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /check backend/i }));
+    await expect(screen.findByText('Server: Online')).resolves.toBeInTheDocument();
+
+    act(() => {
+      resolveOlderHealthCheck({ ok: false });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Server: Online')).toBeInTheDocument();
+      expect(screen.queryByText('Server: Offline')).not.toBeInTheDocument();
+    });
+  });
+
+  it('shows the configured backend version mismatch', async () => {
+    (fetch as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(healthyResponse({ app_version: 'backend-test' }))
+      .mockResolvedValueOnce(optimizationOptionsResponse());
+
+    render(<OptimizeAndExportPage />);
+
+    await expect(screen.findByText('Server: Online')).resolves.toBeInTheDocument();
+    expect(screen.getByText(/frontend and backend versions do not match/i)).toBeInTheDocument();
+  });
+
+  it('warns when frontend and backend versions differ', async () => {
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockImplementation((url: string) => (
+      respondWithHealthyBackend(url, { app_version: 'backend-test' })
+    ));
 
     render(<OptimizeAndExportPage />);
 
@@ -333,14 +766,9 @@ describe('OptimizeAndExportPage error handling', () => {
   });
 
   it('does not warn when frontend and backend versions match', async () => {
-    (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue({
-        status: 'ready',
-        api_version: 'alpha',
-        app_version: 'frontend-test',
-      }),
-    });
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockImplementation((url: string) => (
+      respondWithHealthyBackend(url)
+    ));
 
     render(<OptimizeAndExportPage />);
 
@@ -348,31 +776,131 @@ describe('OptimizeAndExportPage error handling', () => {
     expect(screen.queryByText(/frontend and backend versions do not match/i)).not.toBeInTheDocument();
   });
 
+  it('shows a selected backend claimed performance score', async () => {
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockImplementation((url: string) => (
+      respondWithHealthyBackend(url, {
+        claimed_performance: {
+          score: 41.524445,
+          app_version: 'frontend-test',
+          measured_at: '2026-08-28T19:12:54.974377+00:00',
+        },
+      })
+    ));
+
+    render(<OptimizeAndExportPage />);
+
+    await expect(screen.findByText('Claimed performance: 41.52')).resolves.toBeInTheDocument();
+  });
+
   it('warns when frontend and backend versions match but are dirty', async () => {
     mockCurrentAppVersion.value = 'frontend-test-dirty';
-    (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue({
-        status: 'ready',
-        api_version: 'alpha',
-        app_version: 'frontend-test-dirty',
-      }),
-    });
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockImplementation((url: string) => (
+      respondWithHealthyBackend(url, { app_version: 'frontend-test-dirty' })
+    ));
 
     render(<OptimizeAndExportPage />);
 
     await expect(screen.findByText(/frontend and backend versions do not match/i)).resolves.toBeInTheDocument();
   });
 
-  it('shows a backend check failure message when the configured backend is offline', async () => {
+  it('reports a failed info probe through the Status icon only', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation(() => Promise.resolve({ ok: false, status: 503 }));
+
+    render(<OptimizeAndExportPage />);
+
+    await expect(screen.findByText('Server: Offline')).resolves.toBeInTheDocument();
+    expect(screen.getByLabelText(`${LOCAL_API_URL} status: Offline`)).toHaveAttribute(
+      'title',
+      'Offline. Backend info request failed with status 503.'
+    );
+    expect(screen.queryByText(/backend info request failed/i)).not.toBeInTheDocument();
+  });
+
+  it('reports an unreachable backend through the Status icon only', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation(() => Promise.reject(new Error('connection refused')));
+
+    render(<OptimizeAndExportPage />);
+
+    await expect(screen.findByText('Server: Offline')).resolves.toBeInTheDocument();
+    expect(screen.getByLabelText(`${LOCAL_API_URL} status: Offline`)).toHaveAttribute(
+      'title',
+      'Offline. Backend is not responding.'
+    );
+    expect(screen.queryByText(/is not responding/i)).not.toBeInTheDocument();
+  });
+
+  it('reports an incompatible backend through the Status icon only', async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation((url: string) => Promise.resolve(
+      String(url).endsWith('/optimize/options')
+        ? optimizationOptionsResponse()
+        : healthyResponse({ api_version: '0.1.0' })
+    ));
+
+    render(<OptimizeAndExportPage />);
+
+    await expect(screen.findByText('Server: Incompatible')).resolves.toBeInTheDocument();
+    expect(screen.getByLabelText(`${LOCAL_API_URL} status: Incompatible`)).toHaveAttribute(
+      'title',
+      'Incompatible. Unsupported API version "0.1.0". Expected "0.2.0".'
+    );
+    expect(screen.queryByText(/unsupported api version/i)).not.toBeInTheDocument();
+  });
+
+  it('shows a backend check failure message', async () => {
     (fetch as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('network failed'));
 
     render(<OptimizeAndExportPage />);
 
     await expect(screen.findByText('Server: Offline')).resolves.toBeInTheDocument();
-    expect(screen.getByText(/backend is not responding at the configured endpoint/i)).toBeInTheDocument();
+    expect(screen.getByText('Not responding')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /optimize and download/i })).toBeDisabled();
     expect(screen.getByText(/backend unavailable/i)).toBeInTheDocument();
+  });
+
+  it.each([
+    ['an unexpected service', { service_name: 'different-service' }, /service: different-service \(expected nurse-scheduling-api\)/i],
+    ['an unsupported API version', { api_version: '2' }, /API version: 2 \(expected 0\.2\.0\)/i],
+    ['a backend that is not ready', { status: 'starting' }, /status: starting \(expected ready\)/i],
+    ['missing app version metadata', { app_version: undefined }, /backend version: missing/i],
+  ])('warns about %s and allows sending anyway', async (_label, overrides, warning) => {
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockImplementation((url: string) => (
+      respondWithHealthyBackend(url, overrides)
+    ));
+
+    render(<OptimizeAndExportPage />);
+
+    await expect(screen.findByText('Server: Incompatible')).resolves.toBeInTheDocument();
+    expect(screen.queryByText('Not responding')).not.toBeInTheDocument();
+    expect(screen.getAllByText(warning).length).toBeGreaterThan(0);
+    expect(screen.getByText('Incompatible backend. The request may fail.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Optimize Anyway and Download' })).toBeEnabled();
+  });
+
+  it('sends to an incompatible configured backend', async () => {
+    const user = userEvent.setup();
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock
+      .mockResolvedValueOnce(healthyResponse({ api_version: 'alpha' }))
+      .mockResolvedValueOnce(optimizationOptionsResponse())
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        text: vi.fn().mockResolvedValue('request rejected by old API'),
+      });
+
+    render(<OptimizeAndExportPage />);
+
+    await screen.findByText('Server: Incompatible');
+    await user.click(screen.getByRole('button', { name: 'Optimize Anyway and Download' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      `${LOCAL_API_URL}/optimize`,
+      expect.objectContaining({ method: 'POST' })
+    ));
+    await expect(screen.findByText('Server error (422): request rejected by old API')).resolves.toBeInTheDocument();
   });
 
   it('submits generic arrays and marked Exact/Range preferences through the Optimize path', async () => {
@@ -427,9 +955,9 @@ describe('OptimizeAndExportPage error handling', () => {
     await screen.findByText('Server error (422): submission captured');
     expect(mockGenerateYamlFromState.mock.lastCall?.[0].preferences).toEqual(preferences);
 
-    const optimizeCall = fetchMock.mock.calls.find(([url]) => url === `${BACKEND_API_URL}/optimize`);
+    const optimizeCall = fetchMock.mock.calls.find(([url]) => url === `${LOCAL_API_URL}/optimize`);
     const formData = optimizeCall?.[1]?.body as FormData;
-    expect(formData.get('yaml_content')).toBe('preferences: wire-variants\n');
+    expect(await (formData.get('file') as Blob).text()).toBe('preferences: wire-variants\n');
   });
 
   it('blocks normal Optimize at its named gate before sending a request', async () => {
@@ -452,7 +980,7 @@ describe('OptimizeAndExportPage error handling', () => {
     expect(screen.getByRole('alert')).toHaveTextContent("missing the explicit coefficient for 'E'");
     expect(screen.getByRole('link', { name: 'Review Contracted Hours' }))
       .toHaveAttribute('href', '/shift-counts');
-    expect(fetchMock.mock.calls.filter(([url]) => url === `${BACKEND_API_URL}/optimize`))
+    expect(fetchMock.mock.calls.filter(([url]) => url === `${LOCAL_API_URL}/optimize`))
       .toHaveLength(0);
   });
 
@@ -562,15 +1090,26 @@ describe('OptimizeAndExportPage error handling', () => {
       .mockRejectedValueOnce(new Error('cleanup failed'));
 
     render(<OptimizeAndExportPage />);
-    await screen.findByText('Server: Online');
     await user.click(screen.getByRole('button', { name: /optimize and download/i }));
 
     await expect(screen.findByText('Schedule optimized and downloaded successfully!')).resolves.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Star the project on GitHub' })).toBeInTheDocument();
     expect(screen.getByText('schedule.xlsx')).toBeInTheDocument();
     expect(screen.getByText('42,000')).toBeInTheDocument();
     expect(screen.getByText('OPTIMAL')).toBeInTheDocument();
 
     expect(fetch).toHaveBeenCalledWith('http://localhost:8000/optimize', expect.objectContaining({ method: 'POST' }));
+    const optimizeRequest = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([url, init]) => url === 'http://localhost:8000/optimize' && (init as RequestInit | undefined)?.method === 'POST'
+    );
+    const optimizeBody = optimizeRequest?.[1]?.body as FormData;
+    expect(optimizeBody).toBeInstanceOf(FormData);
+    expect(optimizeBody.get('yaml_content')).toBeNull();
+    expect(optimizeBody.get('file')).toBeInstanceOf(File);
+    expect((optimizeBody.get('file') as File).name).toBe('schedule.yaml');
+    expect(optimizeBody.get('prettify')).toBe('true');
+    expect(optimizeBody.get('timeout')).toBe('300');
+    expect(optimizeBody.get('solver')).toBe('ortools/cp-sat');
     expect(fetch).toHaveBeenCalledWith(
       'http://localhost:8000/optimize/opt_test',
       expect.objectContaining({ method: 'GET' })
@@ -616,7 +1155,6 @@ describe('OptimizeAndExportPage error handling', () => {
       .mockResolvedValueOnce({ ok: true });
 
     render(<OptimizeAndExportPage />);
-    await screen.findByText('Server: Online');
     expect(screen.getByRole('checkbox', { name: /anonymize schedule data/i })).toBeChecked();
     await user.click(screen.getByRole('button', { name: /optimize and download/i }));
     await screen.findByText('Schedule optimized and downloaded successfully!');
@@ -657,7 +1195,6 @@ describe('OptimizeAndExportPage error handling', () => {
       .mockResolvedValueOnce({ ok: true });
 
     render(<OptimizeAndExportPage />);
-    await screen.findByText('Server: Online');
     await user.click(screen.getByRole('checkbox', { name: /anonymize schedule data/i }));
     await user.click(screen.getByRole('button', { name: /optimize and download/i }));
     await screen.findByText('Schedule optimized and downloaded successfully!');
@@ -701,7 +1238,6 @@ describe('OptimizeAndExportPage error handling', () => {
       });
 
     render(<OptimizeAndExportPage />);
-    await screen.findByText('Server: Online');
     await user.click(screen.getByRole('button', { name: /optimize and download/i }));
     await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
 
@@ -766,7 +1302,6 @@ describe('OptimizeAndExportPage error handling', () => {
       });
 
     render(<OptimizeAndExportPage />);
-    await screen.findByText('Server: Online');
     await user.click(screen.getByRole('button', { name: /optimize and download/i }));
     await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
 
@@ -801,7 +1336,6 @@ describe('OptimizeAndExportPage error handling', () => {
       .mockResolvedValue({ ok: true });
 
     render(<OptimizeAndExportPage />);
-    await screen.findByText('Server: Online');
     await user.click(screen.getByRole('button', { name: /optimize and download/i }));
     await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
 
@@ -809,7 +1343,7 @@ describe('OptimizeAndExportPage error handling', () => {
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/heartbeat'))).toBe(false);
   });
 
-  it('keeps a dropped SSE stream open for automatic reconnection', async () => {
+  it('falls back to polling when the SSE stream disconnects', async () => {
     const user = userEvent.setup();
     vi.stubGlobal('EventSource', MockEventSource);
     const appendChildSpy = vi.spyOn(document.body, 'appendChild');
@@ -838,7 +1372,6 @@ describe('OptimizeAndExportPage error handling', () => {
       });
 
     render(<OptimizeAndExportPage />);
-    await screen.findByText('Server: Online');
     await user.click(screen.getByRole('button', { name: /optimize and download/i }));
     await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
 
@@ -848,12 +1381,8 @@ describe('OptimizeAndExportPage error handling', () => {
       });
     });
 
-    expect(screen.getByText('Optimization event stream disconnected; waiting to reconnect')).toBeInTheDocument();
-    expect(MockEventSource.instances[0].close).not.toHaveBeenCalled();
-
-    act(() => {
-      MockEventSource.instances[0].emit('job.result_available', { outcome: 'optimal', score: 77 });
-    });
+    expect(screen.getByText('Optimization event stream disconnected; falling back to polling')).toBeInTheDocument();
+    expect(MockEventSource.instances[0].close).toHaveBeenCalled();
 
     await expect(screen.findByText('Schedule optimized and downloaded successfully!')).resolves.toBeInTheDocument();
     expect(screen.getByText('recovered.xlsx')).toBeInTheDocument();
@@ -889,7 +1418,6 @@ describe('OptimizeAndExportPage error handling', () => {
       });
 
     render(<OptimizeAndExportPage />);
-    await screen.findByText('Server: Online');
     await user.click(screen.getByRole('button', { name: /optimize and download/i }));
     await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
 
@@ -930,7 +1458,6 @@ describe('OptimizeAndExportPage error handling', () => {
       });
 
     render(<OptimizeAndExportPage />);
-    await screen.findByText('Server: Online');
     await user.click(screen.getByRole('button', { name: /optimize and download/i }));
     await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
 
@@ -957,7 +1484,6 @@ describe('OptimizeAndExportPage error handling', () => {
       });
 
     render(<OptimizeAndExportPage />);
-    await screen.findByText('Server: Online');
     await user.click(screen.getByRole('button', { name: /optimize and download/i }));
     await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
 
@@ -1026,4 +1552,181 @@ describe('OptimizeAndExportPage error handling', () => {
 
     expect(fetch).not.toHaveBeenCalledWith('http://localhost:8000/optimize', expect.anything());
   });
+});
+
+describe('OptimizeAndExportPage backend authentication', () => {
+  const AUTH_STORAGE_KEY = 'nurse-scheduling-backend-token';
+  const BACKEND_TOKEN = 'shared-backend-token';
+  const protectedInfoResponse = () => healthyResponse({ auth: { required: true, scheme: 'bearer' } });
+  const unauthorizedResponse = () => ({
+    ok: false,
+    status: 401,
+    text: vi.fn().mockResolvedValue(JSON.stringify({ detail: 'Backend credentials are required.' })),
+  });
+
+  const readStoredToken = () => JSON.parse(
+    window.localStorage.getItem(AUTH_STORAGE_KEY) ?? 'null'
+  ) as { endpoint: string; token: string } | null;
+
+  const respondByUrl = (fetchMock: ReturnType<typeof vi.fn>) => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith('/info')) {
+        return Promise.resolve(protectedInfoResponse());
+      }
+      if (requestUrl.endsWith('/optimize/options')) {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        return Promise.resolve(
+          headers.Authorization === `Bearer ${BACKEND_TOKEN}`
+            ? optimizationOptionsResponse()
+            : unauthorizedResponse()
+        );
+      }
+      return Promise.resolve({ ok: true, json: vi.fn().mockResolvedValue({}) });
+    });
+    return fetchMock;
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    MockEventSource.instances = [];
+    mockGenerateYamlFromState.mockReturnValue('apiVersion: alpha\ndescription: baseline\n');
+    mockRestorePeopleIdsInXlsx.mockClear();
+    mockRestorePeopleIdsInXlsx.mockImplementation(async blob => blob);
+    mockUseSchedulingData.mockReturnValue(createSchedulingData());
+    mockCurrentAppVersion.value = 'frontend-test';
+    vi.stubGlobal('fetch', vi.fn());
+    vi.stubGlobal('EventSource', undefined);
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+  });
+
+  it('keeps working unchanged against backends that do not advertise authentication', async () => {
+    queueInitialLocalSelection(fetch as unknown as ReturnType<typeof vi.fn>);
+
+    render(<OptimizeAndExportPage />);
+
+    await expect(screen.findByText('Server: Online')).resolves.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /enter token for/i })).not.toBeInTheDocument();
+    const optionsCall = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([url]) => String(url).endsWith('/optimize/options')
+    );
+    expect(optionsCall).toBeDefined();
+    expect((optionsCall?.[1] as RequestInit | undefined)?.headers ?? {}).not.toHaveProperty('Authorization');
+  });
+
+  it('reports that credentials are required and prompts for a token', async () => {
+    respondByUrl(fetch as unknown as ReturnType<typeof vi.fn>);
+
+    render(<OptimizeAndExportPage />);
+
+    await expect(screen.findByText('Server: Credentials required')).resolves.toBeInTheDocument();
+    // The token row and the Status icon carry this state, so the description line stays short.
+    expect(screen.getByText('Token required')).toBeInTheDocument();
+    expect(screen.queryByText(/Last checked:.*credential/i)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(`${LOCAL_API_URL} status: Credentials required`)).toHaveAttribute(
+      'title',
+      'Credentials required. Select Enter token to continue.'
+    );
+    expect(screen.getByRole('button', { name: `Enter token for ${LOCAL_API_URL}` })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /optimize and download/i })).toBeDisabled();
+  });
+
+  it('authorizes the backend with an entered token and remembers it when asked', async () => {
+    const user = userEvent.setup();
+    respondByUrl(fetch as unknown as ReturnType<typeof vi.fn>);
+
+    render(<OptimizeAndExportPage />);
+    await screen.findByText('Server: Credentials required');
+
+    await user.click(screen.getByRole('button', { name: `Enter token for ${LOCAL_API_URL}` }));
+    await user.type(screen.getByLabelText(`Token for ${LOCAL_API_URL}`), BACKEND_TOKEN);
+    await user.click(screen.getByRole('checkbox', { name: /remember on this device/i }));
+    await user.click(screen.getByRole('button', { name: `Save token for ${LOCAL_API_URL}` }));
+
+    await expect(screen.findByText('Server: Online')).resolves.toBeInTheDocument();
+    expect(screen.getByText('Token saved on this device')).toBeInTheDocument();
+    expect(readStoredToken()).toEqual({ endpoint: LOCAL_API_URL, token: BACKEND_TOKEN });
+  });
+
+  it('uses a token for the session only when it is not remembered', async () => {
+    const user = userEvent.setup();
+    respondByUrl(fetch as unknown as ReturnType<typeof vi.fn>);
+
+    render(<OptimizeAndExportPage />);
+    await screen.findByText('Server: Credentials required');
+
+    await user.click(screen.getByRole('button', { name: `Enter token for ${LOCAL_API_URL}` }));
+    await user.type(screen.getByLabelText(`Token for ${LOCAL_API_URL}`), BACKEND_TOKEN);
+    await user.click(screen.getByRole('button', { name: `Save token for ${LOCAL_API_URL}` }));
+
+    await expect(screen.findByText('Server: Online')).resolves.toBeInTheDocument();
+    expect(screen.getByText('Token set for this session')).toBeInTheDocument();
+    expect(readStoredToken()).toBeNull();
+  });
+
+  it('sends a remembered token with optimization requests', async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ endpoint: LOCAL_API_URL, token: BACKEND_TOKEN }));
+    const fetchMock = respondByUrl(fetch as unknown as ReturnType<typeof vi.fn>);
+
+    render(<OptimizeAndExportPage />);
+    await screen.findByText('Server: Online');
+    await user.click(screen.getByRole('button', { name: /optimize and download/i }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/optimize'))).toBe(true));
+    const createCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/optimize'));
+    expect((createCall?.[1] as RequestInit).headers).toMatchObject({
+      Authorization: `Bearer ${BACKEND_TOKEN}`,
+    });
+  });
+
+  it('reports a rejected token and forgets it on request', async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ endpoint: LOCAL_API_URL, token: 'stale-token' }));
+    respondByUrl(fetch as unknown as ReturnType<typeof vi.fn>);
+
+    render(<OptimizeAndExportPage />);
+
+    await expect(screen.findByText('Server: Credentials required')).resolves.toBeInTheDocument();
+    // A rejected token is distinguished only by the Status icon and its hover text.
+    expect(screen.getByLabelText(`${LOCAL_API_URL} status: Credentials rejected`)).toHaveAttribute(
+      'title',
+      'Credentials rejected. Select Change to enter the current token.'
+    );
+    expect(screen.queryByText(/Last checked:.*rejected/i)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: `Forget token for ${LOCAL_API_URL}` }));
+
+    await waitFor(() => expect(readStoredToken()).toBeNull());
+    expect(screen.getByRole('button', { name: `Enter token for ${LOCAL_API_URL}` })).toBeInTheDocument();
+  });
+
+  it('surfaces a credentials failure that happens during a run', async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ endpoint: LOCAL_API_URL, token: BACKEND_TOKEN }));
+    // The token is rotated on the backend after the page has already gone online, so
+    // discovery keeps succeeding while the run itself is refused.
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation((url: string) => {
+      const requestUrl = String(url);
+      if (requestUrl.endsWith('/info')) {
+        return Promise.resolve(protectedInfoResponse());
+      }
+      if (requestUrl.endsWith('/optimize/options')) {
+        return Promise.resolve(optimizationOptionsResponse());
+      }
+      return Promise.resolve(unauthorizedResponse());
+    });
+
+    render(<OptimizeAndExportPage />);
+    await screen.findByText('Server: Online');
+    await user.click(screen.getByRole('button', { name: /optimize and download/i }));
+
+    await expect(
+      screen.findByText('Backend credentials are missing or invalid. Enter the backend token and try again.')
+    ).resolves.toBeInTheDocument();
+  });
+
 });

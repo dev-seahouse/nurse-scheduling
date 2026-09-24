@@ -19,7 +19,7 @@
 
 // This test is mostly AI generated.
 
-import { expect, Page } from '@playwright/test';
+import { expect, Page, Route } from '@playwright/test';
 import ExcelJS from 'exceljs';
 import { E2E_BACKEND_API_URL } from './constants';
 
@@ -75,6 +75,25 @@ export async function seedSchedulingState(page: Page, state: StoredState) {
   );
 }
 
+export async function seedMinimalSchedulingState(page: Page) {
+  await seedSchedulingState(page, {
+    apiVersion: 'test',
+    description: 'minimal E2E schedule',
+    dates: { range: {}, groups: [] },
+    people: {
+      items: [{ id: 'Person 1', description: '', history: [] }],
+      groups: [],
+      history: [],
+    },
+    shiftTypes: {
+      items: [{ id: 'D', description: 'Day' }],
+      groups: [],
+    },
+    preferences: [{ type: 'at most one shift per day' }],
+    export: { formatting: [] },
+  });
+}
+
 export async function disableModalDialogs(page: Page) {
   page.on('dialog', async (dialog) => {
     await dialog.accept();
@@ -90,7 +109,16 @@ type MockOptimizeAndExportOptions = {
   xlsxReady?: boolean;
   body?: Buffer;
   disableEventSource?: boolean;
+  requiredAuthToken?: string;
   onSubmit?: (body: string) => void;
+  defaultSolver?: string;
+  solverChoices?: Array<{
+    value: string;
+    label: string;
+    compute: 'cpu' | 'gpu';
+    timeout: { default: number; minimum: number; maximum: number };
+    controls: { cancel_running: boolean; finish_now: boolean };
+  }>;
 };
 
 export async function createMockXlsxBuffer(): Promise<Buffer> {
@@ -120,11 +148,44 @@ export async function mockOptimizeAndExport(
     xlsxReady = true,
     body,
     disableEventSource = true,
+    requiredAuthToken,
     onSubmit,
+    defaultSolver = 'ortools/cp-sat',
+    solverChoices = [
+      {
+        value: 'ortools/cp-sat',
+        label: 'OR-Tools | CP-SAT',
+        compute: 'cpu',
+        timeout: { default: 300, minimum: 1, maximum: 3600 },
+        controls: { cancel_running: true, finish_now: true },
+      },
+    ],
   }: MockOptimizeAndExportOptions = {},
 ) {
   const jobId = 'e2e-job';
   const xlsxBody = body ?? (await createMockXlsxBuffer());
+  const isAuthorized = (route: Route) => (
+    requiredAuthToken === undefined
+    || route.request().headers().authorization === `Bearer ${requiredAuthToken}`
+  );
+  const corsHeaders = {
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Origin': '*',
+  };
+  const fulfillPreflight = (route: Route) => route.fulfill({
+    status: 204,
+    headers: corsHeaders,
+  });
+  const rejectUnauthorized = (route: Route) => route.fulfill({
+    status: 401,
+    headers: {
+      ...corsHeaders,
+      'Content-Type': 'application/json',
+      'WWW-Authenticate': 'Bearer',
+    },
+    body: JSON.stringify({ detail: 'Backend credentials are required.' }),
+  });
 
   if (disableEventSource) {
     await page.addInitScript(() => {
@@ -149,8 +210,45 @@ export async function mockOptimizeAndExport(
       },
       body: JSON.stringify({
         status: 'ready',
-        api_version: 'test',
+        service_name: 'nurse-scheduling-api',
+        api_version: '0.2.0',
         app_version: 'test',
+        auth: requiredAuthToken === undefined
+          ? { required: false, scheme: 'bearer' }
+          : { required: true, scheme: 'bearer' },
+        jobs: { running: 0, queued: 0, cancelling: 0 },
+        workers: { online: 1 },
+      }),
+    });
+  });
+
+  await page.route(`${E2E_BACKEND_API_URL}/optimize/options`, async route => {
+    if (route.request().method() === 'OPTIONS') {
+      await fulfillPreflight(route);
+      return;
+    }
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    if (!isAuthorized(route)) {
+      await rejectUnauthorized(route);
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      headers: {
+        ...corsHeaders,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        schema_version: 'alpha',
+        solver: {
+          default: defaultSolver,
+          choices: solverChoices,
+        },
+        prettify: { default: true },
       }),
     });
   });
@@ -158,8 +256,16 @@ export async function mockOptimizeAndExport(
   await page.route(`${E2E_BACKEND_API_URL}/optimize`, async route => {
     const request = route.request();
 
+    if (request.method() === 'OPTIONS') {
+      await fulfillPreflight(route);
+      return;
+    }
     if (request.method() !== 'POST') {
       await route.fallback();
+      return;
+    }
+    if (!isAuthorized(route)) {
+      await rejectUnauthorized(route);
       return;
     }
 
@@ -168,7 +274,7 @@ export async function mockOptimizeAndExport(
     if (status >= 400) {
       await route.fulfill({
         status,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         body: JSON.stringify({ detail: errorDetail }),
       });
       return;
@@ -176,7 +282,7 @@ export async function mockOptimizeAndExport(
 
     await route.fulfill({
       status: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         id: jobId,
         state: 'queued',
@@ -197,14 +303,24 @@ export async function mockOptimizeAndExport(
   });
 
   await page.route(`${E2E_BACKEND_API_URL}/optimize/${jobId}`, async route => {
-    if (route.request().method() === 'DELETE') {
-      await route.fulfill({ status: 204 });
+    const request = route.request();
+
+    if (request.method() === 'OPTIONS') {
+      await fulfillPreflight(route);
+      return;
+    }
+    if (!isAuthorized(route)) {
+      await rejectUnauthorized(route);
+      return;
+    }
+    if (request.method() === 'DELETE') {
+      await route.fulfill({ status: 204, headers: corsHeaders });
       return;
     }
 
     await route.fulfill({
       status: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         id: jobId,
         state: 'completed',
@@ -230,7 +346,16 @@ export async function mockOptimizeAndExport(
   });
 
   await page.route(`${E2E_BACKEND_API_URL}/optimize/${jobId}/xlsx`, async route => {
+    if (route.request().method() === 'OPTIONS') {
+      await fulfillPreflight(route);
+      return;
+    }
+    if (!isAuthorized(route)) {
+      await rejectUnauthorized(route);
+      return;
+    }
     const headers: Record<string, string> = {
+      ...corsHeaders,
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     };
 
