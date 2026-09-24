@@ -35,8 +35,13 @@ const e2ePort = Number(process.env[portEnvName] ?? execFileSync(
 process.env[portEnvName] = String(e2ePort);
 const e2eBaseURL = `http://127.0.0.1:${e2ePort}`;
 
+// Genie keeps the AI assistant specs for reference but does not run them by default.
+// See docs/content/ai-assistant.md#genie-e2e-status. Set RUN_AI_E2E=1 to run them.
+const AI_E2E_SPECS = ['**/experimental-ai-*.spec.ts'];
+
 export default defineConfig({
   testDir: './e2e',
+  testIgnore: process.env.RUN_AI_E2E === '1' ? [] : AI_E2E_SPECS,
   fullyParallel: false,
   retries: process.env.CI ? 2 : 0,
   reporter: 'list',

@@ -122,6 +122,10 @@ The expected hits are `plans/handoffs/`, `web-frontend/.gitignore`, and
   `NODE_OPTIONS=--no-experimental-webstorage`. Node 26 has a global
   `localStorage` that hides the jsdom one.
 - Resolve `bun.lock` with `bun install` after you resolve `package.json`.
+- Keep the `testIgnore` for `experimental-ai-*.spec.ts` in
+  `playwright.config.ts`. Run Playwright once without it (`RUN_AI_E2E=1`) and
+  once with it. Upstream specs often assume the server list, OFF as the only
+  automatic shift type, or FREEDAY. Adapt them to genie instead of skipping them.
 - If `core/tests/testcases/real/large-ward-with-87-people-2025-11.yaml`
   changes, copy it to `web-frontend/public/examples/`. Genie renamed
   `FREEDAY` in it.

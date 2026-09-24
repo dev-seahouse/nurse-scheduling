@@ -49,8 +49,9 @@ test('new schedule resets the app to an empty state from the home page flow', as
   await expect(page.getByRole('heading', { name: 'Shift Type Management' })).toBeVisible();
   const shiftTypesTable = page.getByTestId('data-table-shift-types');
   const shiftTypeGroupsTable = page.getByTestId('data-table-shift-types-groups');
-  await expect(shiftTypesTable.locator('tbody tr')).toHaveCount(1);
-  await expect(shiftTypesTable.getByText('Auto', { exact: true })).toBeVisible();
+  // Genie adds the LEAVE day-state next to OFF.
+  await expect(shiftTypesTable.locator('tbody tr')).toHaveCount(2);
+  await expect(shiftTypesTable.getByText('Auto', { exact: true })).toHaveCount(2);
   await expect(shiftTypeGroupsTable.locator('tbody tr')).toHaveCount(1);
   await expect(shiftTypeGroupsTable.getByText('Auto', { exact: true })).toBeVisible();
 });

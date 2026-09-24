@@ -750,5 +750,17 @@ bun run test -- \
   src/app/experimental-ai/page.test.tsx \
   src/components/Navigation.test.tsx
 bun run build
-bun run test:e2e:affected -- e2e/experimental-ai-basic.spec.ts
+RUN_AI_E2E=1 bun run test:e2e:affected -- e2e/experimental-ai-basic.spec.ts
 ```
+
+### Genie E2E status
+
+The genie fork does not run the AI Playwright specs by default.
+`web-frontend/playwright.config.ts` ignores `e2e/experimental-ai-*.spec.ts`
+unless `RUN_AI_E2E=1` is set. The specs stay in the repository as a reference.
+
+The reason is that the AI assistant is not ready for genie users yet. Its
+Singapore holiday handling and the genie schema topics passed the unit tests
+only. No live AI evaluation checked them yet. The specs use a mocked AI
+backend, so a pass would not show that the assistant works. Turn the specs back
+on when the live evaluation of the `singapore-holidays` cases passes.
