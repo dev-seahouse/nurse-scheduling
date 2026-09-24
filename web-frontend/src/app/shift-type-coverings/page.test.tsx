@@ -97,6 +97,36 @@ describe('ShiftTypeCoveringsPage', () => {
     expect(matches).toHaveLength(1);
   });
 
+  async function addRule(user: ReturnType<typeof userEvent.setup>, selectDate: boolean) {
+    await user.click(screen.getByRole('button', { name: /add shift type covering/i }));
+    if (selectDate) await user.click(screen.getByRole('checkbox', { name: '2024-01-01' }));
+    await user.click(screen.getAllByRole('checkbox', { name: 'Anna' })[0]);
+    await user.click(screen.getAllByRole('checkbox', { name: 'Lil' })[1]);
+    await user.click(screen.getByRole('checkbox', { name: 'D' }));
+    await user.click(screen.getByRole('button', { name: 'Add' }));
+  }
+
+  it('saves the selected dates with the rule', async () => {
+    const user = userEvent.setup();
+    renderShiftTypeCoveringsPage();
+
+    await addRule(user, true);
+
+    const saved = updatePreferencesByType.mock.calls.at(-1)?.at(-1);
+    expect(saved).toEqual([expect.objectContaining({ date: ['2024-01-01'], preceptors: [['Anna']], preceptees: [['Lil']] })]);
+  });
+
+  it('omits the date field when no date is selected, meaning all dates', async () => {
+    const user = userEvent.setup();
+    renderShiftTypeCoveringsPage();
+
+    await addRule(user, false);
+
+    const saved = updatePreferencesByType.mock.calls.at(-1)?.at(-1);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).not.toHaveProperty('date');
+  });
+
   it('renders existing rules in the list', () => {
     const existing = {
       type: 'shift type covering',

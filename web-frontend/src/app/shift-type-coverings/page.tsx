@@ -155,6 +155,8 @@ export default function ShiftTypeCoveringsPage() {
   const buildPrefFromForm = (): ShiftTypeCoveringPreference => ({
     type: SHIFT_TYPE_COVERING,
     description: formData.description,
+    // An omitted date means all dates, so only an empty selection may drop it.
+    ...(formData.date.length > 0 ? { date: formData.date } : {}),
     preceptors: [formData.preceptors],
     preceptees: [formData.preceptees],
     shiftTypes: [formData.shift_types],
