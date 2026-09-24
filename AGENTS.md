@@ -7,7 +7,8 @@
 - `scripts/`: setup and development utilities.
 - `thirdparty/`: external calendar data and helpers.
 
-Before modifying `core/` or `web-frontend/`, read its `AGENTS.md`.
+Before modifying `core/`, read `core/AGENTS.md`. The genie fork has no
+`web-frontend/AGENTS.md`, so follow this file for `web-frontend/`.
 
 ## Workflow
 - Linux setup: run `./scripts/setup_env.sh`.

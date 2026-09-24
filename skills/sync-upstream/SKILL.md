@@ -17,8 +17,12 @@ Keep genie-only code in genie-owned files, because a new file never conflicts.
    not set, ask the user. The repo pins the SSH key in `core.sshCommand`. If
    `git fetch` fails with `communication with agent failed`, ask the user to
    unlock 1Password.
-2. Fetch, then work in a separate worktree so that the `dev` checkout stays
-   clean: `git worktree add ../nurse-scheduling-genie feature/genie`.
+2. Update `dev`. This checkout has only the fork remote `origin`
+   (dev-seahouse/nurse-scheduling) and no `upstream` remote. Upstream j3soon
+   `dev` arrives when the user runs Sync fork on GitHub, so ask for that first,
+   then run `git fetch origin` and `git merge --ff-only origin/dev` on `dev`.
+   Then work in a separate worktree so that the `dev` checkout stays clean:
+   `git worktree add ../nurse-scheduling-genie feature/genie`.
 3. Run `git merge dev --no-commit`. Count the conflict hunks per file.
 4. For each conflicted file, read the genie diff since the merge base
    (`git diff $(git merge-base HEAD MERGE_HEAD) HEAD -- <file>`). If the file
@@ -88,7 +92,8 @@ Keep genie-only code in genie-owned files, because a new file never conflicts.
   `tests/real/solver_capabilities.py`, `docker/Dockerfile.dev.cuopt`,
   `docker/.env.gpu.example`, and their docs rows. `ortools/mpsolver/cbc` is a
   different solver and stays.
-- `web-frontend/AGENTS.md`.
+- `web-frontend/AGENTS.md`. The root `AGENTS.md` line about reading it is
+  changed to say so. Keep that change when upstream edits the line.
 
 Find leftovers in the working tree, not the index:
 
