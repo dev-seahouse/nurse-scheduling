@@ -152,11 +152,18 @@ describe('singaporeHolidays', () => {
     };
     const entries = [
       { date: '2026-01-01', name: 'New Year’s Day', isObserved: false },
-      { date: '2026-12-31', name: 'Year End', isObserved: false },
+      { date: '2026-12-25', name: 'Christmas Day', isObserved: false },
     ];
 
     it('accepts ranges fully inside the supported window', () => {
       expect(isSingaporeHolidayRangeSupported(supported, entries)).toBe(true);
+    });
+
+    it('supports the days after the last holiday of a published year', () => {
+      expect(isSingaporeHolidayRangeSupported({
+        startDate: new Date('2026-12-01'),
+        endDate: new Date('2026-12-31'),
+      }, entries)).toBe(true);
     });
 
     it('rejects ranges that start before the supported window', () => {
@@ -179,11 +186,11 @@ describe('singaporeHolidays', () => {
   });
 
   describe('getSingaporeHolidaySupportLabel', () => {
-    it('returns the derived range from the loaded entries', () => {
+    it('returns the calendar years covered by the loaded entries', () => {
       expect(getSingaporeHolidaySupportLabel([
-        { date: '2026-01-01', name: 'X', isObserved: false },
-        { date: '2026-12-31', name: 'Y', isObserved: false },
-      ])).toBe('2026-01-01 to 2026-12-31');
+        { date: '2026-02-17', name: 'Chinese New Year', isObserved: false },
+        { date: '2027-12-25', name: 'Christmas Day', isObserved: false },
+      ])).toBe('2026-01-01 to 2027-12-31');
     });
 
     it('returns a placeholder when no entries are loaded', () => {

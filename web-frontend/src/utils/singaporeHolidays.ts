@@ -149,7 +149,9 @@ function getSupportedRange(entries: SingaporeHolidayEntry[]): SupportedRange | n
     if (entry.date < start) start = entry.date;
     if (entry.date > end) end = entry.date;
   }
-  return { start, end };
+  // data.gov.sg publishes whole calendar years, so the days after the last
+  // holiday of a year are known to be non-holidays too.
+  return { start: `${start.slice(0, 4)}-01-01`, end: `${end.slice(0, 4)}-12-31` };
 }
 
 export function getSingaporeHolidaySupportLabel(entries: SingaporeHolidayEntry[]): string {

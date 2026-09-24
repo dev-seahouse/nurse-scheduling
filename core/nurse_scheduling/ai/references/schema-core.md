@@ -89,8 +89,9 @@ Rules:
   `buildSingaporeHolidayGroups` builder turns them into groups. Together they are the single authoritative source.
   Reproduce the builder's WORKDAY, NON-WORKDAY, and PH output for the new range. Preserve other date groups while
   migrating their concrete members.
-- If the JSON is empty or its dates do not cover the whole new range, the builder produces no groups. Tell the user
-  to open the Dates page so that the holidays load, keep the existing holiday groups, and extend only the range.
+- If the JSON is empty or its entries do not cover every calendar year of the new range, the builder produces no
+  groups. Tell the user to open the Dates page so that the holidays load, keep the existing holiday groups, and
+  extend only the range.
 - When shrinking the range, remove every now-out-of-range date in one coordinated file edit. Date selectors can occur in `dates.groups[].members`, preference `date` or `countDates`, export formatting `dates`, and export extra-column `countDates`. Search once with `rg` for all equivalent short, MM-DD, full-date, and range forms of the removed dates. Do not repeat that search by section or inspect unrelated preferences. Read containing blocks only where an entry may need deletion, then make the remaining replacements together. If an explicit preference or export rule loses its entire date scope, delete that entry instead of leaving an empty selector or omitting the selector, which could broaden its meaning.
 
 Minimal frontend-compatible YAML:
